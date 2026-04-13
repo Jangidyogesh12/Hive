@@ -1,1 +1,1 @@
-![Hive logo](public/logo.png)
+![Hive logo](public/hive_logo.png)
