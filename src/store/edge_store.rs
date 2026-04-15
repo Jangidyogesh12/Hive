@@ -1,12 +1,12 @@
-use crate::store::node_record::NodeRecord;
+use crate::store::edge_record::EdgeRecord;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use crate::errors::DbError;
-pub struct NodeStore {
+pub struct EdgeStore {
     file: std::fs::File,
 }
 
-impl NodeStore {
+impl EdgeStore {
     pub fn open(path: &std::path::Path) -> Result<Self, DbError> {
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -18,7 +18,7 @@ impl NodeStore {
         Ok(Self { file })
     }
 
-    pub fn append(&mut self, record: NodeRecord) -> Result<(), DbError> {
+    pub fn append(&mut self, record: EdgeRecord) -> Result<(), DbError> {
         let buf = record.to_bytes();
 
         self.file
@@ -32,10 +32,10 @@ impl NodeStore {
         Ok(())
     }
 
-    pub fn read(&mut self, id: u64) -> Result<NodeRecord, DbError> {
-        let offset = id * NodeRecord::SIZE as u64;
+    pub fn read(&mut self, id: u64) -> Result<EdgeRecord, DbError> {
+        let offset = id * EdgeRecord::SIZE as u64;
 
-        let mut buf = [0u8; NodeRecord::SIZE];
+        let mut buf = [0u8; EdgeRecord::SIZE];
 
         self.file
             .seek(SeekFrom::Start(offset))
@@ -44,11 +44,11 @@ impl NodeStore {
             .read_exact(&mut buf)
             .map_err(|_| DbError::ReadError)?;
 
-        Ok(NodeRecord::from_bytes(buf))
+        Ok(EdgeRecord::from_bytes(buf))
     }
 
-    pub fn update(&mut self, id: u64, record: NodeRecord) -> Result<(), DbError> {
-        let offset = id * NodeRecord::SIZE as u64;
+    pub fn update(&mut self, id: u64, record: EdgeRecord) -> Result<(), DbError> {
+        let offset = id * EdgeRecord::SIZE as u64;
 
         self.file
             .seek(SeekFrom::Start(offset))
