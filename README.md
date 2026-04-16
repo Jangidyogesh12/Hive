@@ -1,3 +1,3 @@
 <p align="center">
-  <img src="public/logo.png" alt="logo" />
+  <img src="public/hive_logo.png" alt="hive_logo" />
 </p>
