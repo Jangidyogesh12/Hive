@@ -38,7 +38,7 @@ impl EdgeRecord {
         buf[16..24].copy_from_slice(&self.dst.to_le_bytes());
         buf[24..32].copy_from_slice(&self.next_out_edge.to_le_bytes());
         buf[32..40].copy_from_slice(&self.next_in_edge.to_le_bytes());
-        buf[40..48].copy_from_slice(&self.next_in_edge.to_le_bytes());
+        buf[40..48].copy_from_slice(&self.first_property.to_le_bytes());
         buf[48..52].copy_from_slice(&self.edge_type.to_le_bytes());
         buf[52..56].copy_from_slice(&self.flags.to_le_bytes());
 
