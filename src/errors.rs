@@ -1,14 +1,15 @@
+// Error types used by file-backed storage operations.
 use std::error::Error;
 use std::fmt::{Display, Formatter, Result};
 
 #[derive(Debug)]
-
+// Database-level errors surfaced by store APIs.
 pub enum DbError {
-    Io(std::io::Error),
-    FileOpenError,
-    SeekError,
-    WriteError,
-    ReadError,
+    Io(std::io::Error), // Wrapped low-level I/O error.
+    FileOpenError,      // Opening the target file path failed.
+    SeekError,          // Seeking to a file offset failed.
+    WriteError,         // Writing bytes to the file failed.
+    ReadError,          // Reading bytes from the file failed.
 }
 
 impl Display for DbError {

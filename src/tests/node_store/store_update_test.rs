@@ -1,4 +1,4 @@
-//! Tests NodeStore update behavior and record isolation guarantees.
+// Tests NodeStore update behavior and record isolation guarantees.
 use super::super::utils::utils::{cleanup_file, temp_file};
 use crate::store::node_record::NodeRecord;
 use crate::store::node_store::NodeStore;

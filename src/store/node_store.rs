@@ -1,12 +1,16 @@
+// File-backed storage API for fixed-size node records.
 use crate::store::node_record::NodeRecord;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use crate::errors::DbError;
+
+// Append/read/update operations over a node record file.
 pub struct NodeStore {
     file: std::fs::File,
 }
 
 impl NodeStore {
+    // Opens a node store file, creating it if it does not exist.
     pub fn open(path: &std::path::Path) -> Result<Self, DbError> {
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -18,6 +22,7 @@ impl NodeStore {
         Ok(Self { file })
     }
 
+    // Appends a node record at the end of the file.
     pub fn append(&mut self, record: NodeRecord) -> Result<(), DbError> {
         let buf = record.to_bytes();
 
@@ -32,8 +37,9 @@ impl NodeStore {
         Ok(())
     }
 
-    pub fn read(&mut self, id: u64) -> Result<NodeRecord, DbError> {
-        let offset = id * NodeRecord::SIZE as u64;
+    // Reads a node record by zero-based record index.
+    pub fn read(&mut self, idx: u64) -> Result<NodeRecord, DbError> {
+        let offset = idx * NodeRecord::SIZE as u64;
 
         let mut buf = [0u8; NodeRecord::SIZE];
 
@@ -47,8 +53,9 @@ impl NodeStore {
         Ok(NodeRecord::from_bytes(buf))
     }
 
-    pub fn update(&mut self, id: u64, record: NodeRecord) -> Result<(), DbError> {
-        let offset = id * NodeRecord::SIZE as u64;
+    // Updates a node record at the given zero-based record index.
+    pub fn update(&mut self, idx: u64, record: NodeRecord) -> Result<(), DbError> {
+        let offset = idx * NodeRecord::SIZE as u64;
 
         self.file
             .seek(SeekFrom::Start(offset))

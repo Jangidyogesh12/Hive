@@ -1,4 +1,4 @@
-//! Tests EdgeStore update behavior and record isolation guarantees.
+// Tests EdgeStore update behavior and record isolation guarantees.
 use super::super::utils::utils::{cleanup_file, temp_file};
 use crate::store::edge_record::EdgeRecord;
 use crate::store::edge_store::EdgeStore;

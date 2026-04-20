@@ -1,4 +1,4 @@
-//! Tests EdgeRecord defaults and byte serialization roundtrip.
+// Tests EdgeRecord defaults and byte serialization roundtrip.
 use crate::store::edge_record::EdgeRecord;
 use crate::types::NIL_ID;
 

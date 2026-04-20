@@ -1,2 +1,2 @@
-//! Shared test utility module declarations.
+// Shared test utility module declarations.
 pub mod utils;

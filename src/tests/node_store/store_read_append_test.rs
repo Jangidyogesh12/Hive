@@ -1,4 +1,4 @@
-//! Tests NodeStore append/read behavior, ordering, and out-of-bounds reads.
+// Tests NodeStore append/read behavior, ordering, and out-of-bounds reads.
 use super::super::utils::utils::{cleanup_file, temp_file};
 use crate::errors::DbError;
 use crate::store::node_record::NodeRecord;

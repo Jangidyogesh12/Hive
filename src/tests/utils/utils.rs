@@ -1,4 +1,4 @@
-//! Shared helpers for creating and cleaning temporary files in tests.
+// Shared helpers for creating and cleaning temporary files in tests.
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 

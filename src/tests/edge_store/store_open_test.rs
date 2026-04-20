@@ -1,4 +1,4 @@
-//! Tests EdgeStore open behavior and file creation/error handling.
+// Tests EdgeStore open behavior and file creation/error handling.
 use super::super::utils::utils::{cleanup_file, temp_file};
 use crate::errors::DbError;
 use crate::store::edge_store::EdgeStore;
