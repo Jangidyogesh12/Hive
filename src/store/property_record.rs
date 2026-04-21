@@ -1,5 +1,3 @@
-use crate::types::NIL_ID;
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 
