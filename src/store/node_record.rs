@@ -22,14 +22,14 @@ impl NodeRecord {
 
     // Creates a new node record with NIL links and zeroed flags.
     pub fn new(id: u64) -> Self {
-        Self {
+        return Self {
             id,
             first_out_edge: NIL_ID,
             first_in_edge: NIL_ID,
             first_property: NIL_ID,
             flags: 0,
             reserved: 0,
-        }
+        };
     }
 
     // Serializes a node record into its fixed-size little-endian format.
@@ -42,18 +42,18 @@ impl NodeRecord {
         buf[32..36].copy_from_slice(&self.flags.to_le_bytes());
         buf[36..40].copy_from_slice(&self.reserved.to_le_bytes());
 
-        buf
+        return buf;
     }
 
     // Deserializes a node record from its fixed-size byte representation.
     pub fn from_bytes(buf: NodeRecordBytes) -> Self {
-        Self {
+        return Self {
             id: u64::from_le_bytes(buf[0..8].try_into().unwrap()),
             first_out_edge: u64::from_le_bytes(buf[8..16].try_into().unwrap()),
             first_in_edge: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
             first_property: u64::from_le_bytes(buf[24..32].try_into().unwrap()),
             flags: u32::from_le_bytes(buf[32..36].try_into().unwrap()),
             reserved: u32::from_le_bytes(buf[36..40].try_into().unwrap()),
-        }
+        };
     }
 }
