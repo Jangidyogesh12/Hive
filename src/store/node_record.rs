@@ -10,7 +10,7 @@ pub struct NodeRecord {
     pub first_in_edge: u64,  // Link to first incoming edge, or NIL_ID.
     pub first_property: u64, // Link to first property, or NIL_ID.
     pub flags: u32,          // Bitflags for node state.
-    pub reserved: u32,       // Reserved bytes for future fields.
+    pub label_id: u32,       // Label ID resolved via LabelStore.
 }
 
 // Serialized NodeRecord bytes.
@@ -28,7 +28,7 @@ impl NodeRecord {
             first_in_edge: NIL_ID,
             first_property: NIL_ID,
             flags: 0,
-            reserved: 0,
+            label_id: 0,
         };
     }
 
@@ -40,7 +40,7 @@ impl NodeRecord {
         buf[16..24].copy_from_slice(&self.first_in_edge.to_le_bytes());
         buf[24..32].copy_from_slice(&self.first_property.to_le_bytes());
         buf[32..36].copy_from_slice(&self.flags.to_le_bytes());
-        buf[36..40].copy_from_slice(&self.reserved.to_le_bytes());
+        buf[36..40].copy_from_slice(&self.label_id.to_le_bytes());
 
         return buf;
     }
@@ -53,7 +53,7 @@ impl NodeRecord {
             first_in_edge: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
             first_property: u64::from_le_bytes(buf[24..32].try_into().unwrap()),
             flags: u32::from_le_bytes(buf[32..36].try_into().unwrap()),
-            reserved: u32::from_le_bytes(buf[36..40].try_into().unwrap()),
+            label_id: u32::from_le_bytes(buf[36..40].try_into().unwrap()),
         };
     }
 }

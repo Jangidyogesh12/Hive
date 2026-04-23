@@ -12,7 +12,7 @@ fn new_sets_default_fields() {
     assert_eq!(record.first_in_edge, NIL_ID);
     assert_eq!(record.first_property, NIL_ID);
     assert_eq!(record.flags, 0);
-    assert_eq!(record.reserved, 0);
+    assert_eq!(record.label_id, 0);
 }
 
 #[test]
@@ -23,7 +23,7 @@ fn to_bytes_and_from_bytes_roundtrip() {
     record.first_in_edge = 20;
     record.first_property = 30;
     record.flags = 40;
-    record.reserved = 50;
+    record.label_id = 50;
 
     let bytes = record.to_bytes();
     let got = NodeRecord::from_bytes(bytes);

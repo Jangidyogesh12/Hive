@@ -16,7 +16,7 @@ fn append_then_read_returns_same_record() {
     record.first_in_edge = 200;
     record.first_property = 300;
     record.flags = 7;
-    record.reserved = 9;
+    record.label_id = 9;
 
     store.append(record).unwrap();
 

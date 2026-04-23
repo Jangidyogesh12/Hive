@@ -18,7 +18,7 @@ fn update_overwrites_existing_record() {
     updated.first_in_edge = 77;
     updated.first_property = 99;
     updated.flags = 42;
-    updated.reserved = 7;
+    updated.label_id = 7;
 
     store.update(0, updated).unwrap();
 
