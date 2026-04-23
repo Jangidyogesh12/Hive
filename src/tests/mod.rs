@@ -2,5 +2,6 @@
 mod edge_store;
 mod node_store;
 mod property_store;
+mod string_store;
 mod record;
 mod utils;
