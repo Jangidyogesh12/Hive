@@ -24,4 +24,10 @@ impl Display for DbError {
     }
 }
 
+impl From<std::io::Error> for DbError {
+    fn from(err: std::io::Error) -> Self {
+        DbError::Io(err)
+    }
+}
+
 impl Error for DbError {}
