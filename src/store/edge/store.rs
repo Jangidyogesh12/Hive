@@ -1,5 +1,5 @@
 // File-backed storage API for fixed-size edge records.
-use crate::store::edge_record::EdgeRecord;
+use crate::store::edge::record::EdgeRecord;
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},

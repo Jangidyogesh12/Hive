@@ -1,7 +1,7 @@
 // Tests PropertyStore open behavior and file creation/error handling.
 use super::super::utils::utils::{cleanup_file, temp_file};
 use crate::errors::DbError;
-use crate::store::property_store::PropertyStore;
+use crate::store::property::store::PropertyStore;
 
 #[test]
 // Verifies opening a missing path creates the backing file.

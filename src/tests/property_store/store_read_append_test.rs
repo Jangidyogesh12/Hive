@@ -1,8 +1,8 @@
 // Tests PropertyStore append/read behavior, ordering, and out-of-bounds reads.
 use super::super::utils::utils::{cleanup_file, temp_file};
 use crate::errors::DbError;
-use crate::store::property_record::PropertyRecord;
-use crate::store::property_store::PropertyStore;
+use crate::store::property::record::PropertyRecord;
+use crate::store::property::store::PropertyStore;
 
 #[test]
 // Verifies an appended property can be read back unchanged.

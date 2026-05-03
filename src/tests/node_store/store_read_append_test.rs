@@ -1,8 +1,8 @@
 // Tests NodeStore append/read behavior, ordering, and out-of-bounds reads.
 use super::super::utils::utils::{cleanup_file, temp_file};
 use crate::errors::DbError;
-use crate::store::node_record::NodeRecord;
-use crate::store::node_store::NodeStore;
+use crate::store::node::record::NodeRecord;
+use crate::store::node::store::NodeStore;
 
 #[test]
 // Verifies an appended node can be read back unchanged.

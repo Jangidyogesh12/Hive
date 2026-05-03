@@ -1,7 +1,7 @@
 // Tests NodeStore open behavior and file creation/error handling.
 use super::super::utils::utils::{cleanup_file, temp_file};
 use crate::errors::DbError;
-use crate::store::node_store::NodeStore;
+use crate::store::node::store::NodeStore;
 
 #[test]
 // Verifies opening a missing path creates the backing file.

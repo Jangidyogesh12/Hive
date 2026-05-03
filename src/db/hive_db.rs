@@ -2,10 +2,10 @@ use crate::db::store_path::{
     EDGE_STORE_FILE, LABEL_STORE_FILE, NODE_STORE_FILE, PROP_STORE_FILE, STRING_STORE_FILE,
 };
 use crate::errors::DbError;
-use crate::store::edge_store::EdgeStore;
+use crate::store::edge::store::EdgeStore;
 use crate::store::label_store::LabelStore;
-use crate::store::node_store::NodeStore;
-use crate::store::property_store::PropertyStore;
+use crate::store::node::store::NodeStore;
+use crate::store::property::store::PropertyStore;
 use crate::store::string_store::StringStore;
 use std::{fs, io::Error, path::Path};
 

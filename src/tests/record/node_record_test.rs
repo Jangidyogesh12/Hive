@@ -1,5 +1,5 @@
 // Tests NodeRecord defaults and byte serialization roundtrip.
-use crate::store::node_record::NodeRecord;
+use crate::store::node::record::NodeRecord;
 use crate::types::NIL_ID;
 
 #[test]

@@ -1,8 +1,8 @@
 // Tests EdgeStore append/read behavior, ordering, and out-of-bounds reads.
 use super::super::utils::utils::{cleanup_file, temp_file};
 use crate::errors::DbError;
-use crate::store::edge_record::EdgeRecord;
-use crate::store::edge_store::EdgeStore;
+use crate::store::edge::record::EdgeRecord;
+use crate::store::edge::store::EdgeStore;
 
 #[test]
 // Verifies an appended edge can be read back unchanged.

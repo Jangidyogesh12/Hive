@@ -1,7 +1,7 @@
 // Tests PropertyStore update behavior and record isolation guarantees.
 use super::super::utils::utils::{cleanup_file, temp_file};
-use crate::store::property_record::PropertyRecord;
-use crate::store::property_store::PropertyStore;
+use crate::store::property::record::PropertyRecord;
+use crate::store::property::store::PropertyStore;
 
 #[test]
 // Verifies update replaces data at the targeted record index.

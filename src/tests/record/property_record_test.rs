@@ -1,5 +1,5 @@
 // Tests PropertyRecord defaults and byte serialization roundtrip.
-use crate::store::property_record::PropertyRecord;
+use crate::store::property::record::PropertyRecord;
 use crate::types::NIL_ID;
 
 #[test]

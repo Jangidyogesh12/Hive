@@ -1,5 +1,5 @@
-// File-backed storage API for fixed-size property records.
-use crate::store::property_record::PropertyRecord;
+// File-backed storage API for fixed-size node records.
+use crate::store::node::record::NodeRecord;
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
@@ -8,13 +8,13 @@ use std::{
 
 use crate::errors::DbError;
 
-// Append/read/update operations over a property record file.
-pub struct PropertyStore {
+// Append/read/update operations over a node record file.
+pub struct NodeStore {
     file: File,
 }
 
-impl PropertyStore {
-    // Opens a property store file, creating it if it does not exist.
+impl NodeStore {
+    // Opens a node store file, creating it if it does not exist.
     pub fn open(path: &Path) -> Result<Self, DbError> {
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -26,8 +26,8 @@ impl PropertyStore {
         Ok(Self { file })
     }
 
-    // Appends a property record at the end of the file.
-    pub fn append(&mut self, record: PropertyRecord) -> Result<(), DbError> {
+    // Appends a node record at the end of the file.
+    pub fn append(&mut self, record: NodeRecord) -> Result<(), DbError> {
         let buf = record.to_bytes();
 
         self.file
@@ -41,11 +41,11 @@ impl PropertyStore {
         Ok(())
     }
 
-    // Reads a property record by zero-based record index.
-    pub fn read(&mut self, idx: u64) -> Result<PropertyRecord, DbError> {
-        let offset = idx * PropertyRecord::SIZE as u64;
+    // Reads a node record by zero-based record index.
+    pub fn read(&mut self, idx: u64) -> Result<NodeRecord, DbError> {
+        let offset = idx * NodeRecord::SIZE as u64;
 
-        let mut buf = [0u8; PropertyRecord::SIZE];
+        let mut buf = [0u8; NodeRecord::SIZE];
 
         self.file
             .seek(SeekFrom::Start(offset))
@@ -54,12 +54,12 @@ impl PropertyStore {
             .read_exact(&mut buf)
             .map_err(|_| DbError::ReadError)?;
 
-        Ok(PropertyRecord::from_bytes(buf))
+        Ok(NodeRecord::from_bytes(buf))
     }
 
-    // Updates a property record at the given zero-based record index.
-    pub fn update(&mut self, idx: u64, record: PropertyRecord) -> Result<(), DbError> {
-        let offset = idx * PropertyRecord::SIZE as u64;
+    // Updates a node record at the given zero-based record index.
+    pub fn update(&mut self, idx: u64, record: NodeRecord) -> Result<(), DbError> {
+        let offset = idx * NodeRecord::SIZE as u64;
 
         self.file
             .seek(SeekFrom::Start(offset))

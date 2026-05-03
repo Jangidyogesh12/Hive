@@ -1,7 +1,7 @@
 // Tests EdgeStore open behavior and file creation/error handling.
 use super::super::utils::utils::{cleanup_file, temp_file};
 use crate::errors::DbError;
-use crate::store::edge_store::EdgeStore;
+use crate::store::edge::store::EdgeStore;
 
 #[test]
 // Verifies opening a missing path creates the backing file.

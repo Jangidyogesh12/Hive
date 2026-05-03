@@ -1,10 +1,8 @@
 // File-backed record layouts and store implementations.
-pub mod edge_record;
-pub mod edge_store;
 pub mod header;
 pub mod label_store;
-pub mod node_record;
-pub mod node_store;
-pub mod property_record;
-pub mod property_store;
 pub mod string_store;
+
+pub mod edge;
+pub mod node;
+pub mod property;

@@ -1,7 +1,7 @@
 // Tests NodeStore update behavior and record isolation guarantees.
 use super::super::utils::utils::{cleanup_file, temp_file};
-use crate::store::node_record::NodeRecord;
-use crate::store::node_store::NodeStore;
+use crate::store::node::record::NodeRecord;
+use crate::store::node::store::NodeStore;
 
 #[test]
 // Verifies update replaces data at the targeted record index.
