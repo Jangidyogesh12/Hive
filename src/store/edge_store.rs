@@ -1,17 +1,21 @@
 // File-backed storage API for fixed-size edge records.
 use crate::store::edge_record::EdgeRecord;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::{
+    fs::File,
+    io::{Read, Seek, SeekFrom, Write},
+    path::Path,
+};
 
 use crate::errors::DbError;
 
 // Append/read/update operations over an edge record file.
 pub struct EdgeStore {
-    file: std::fs::File,
+    file: File,
 }
 
 impl EdgeStore {
     // Opens an edge store file, creating it if it does not exist.
-    pub fn open(path: &std::path::Path) -> Result<Self, DbError> {
+    pub fn open(path: &Path) -> Result<Self, DbError> {
         let file = std::fs::OpenOptions::new()
             .create(true)
             .read(true)

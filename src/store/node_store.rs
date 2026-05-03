@@ -1,17 +1,21 @@
 // File-backed storage API for fixed-size node records.
 use crate::store::node_record::NodeRecord;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::{
+    fs::File,
+    io::{Read, Seek, SeekFrom, Write},
+    path::Path,
+};
 
 use crate::errors::DbError;
 
 // Append/read/update operations over a node record file.
 pub struct NodeStore {
-    file: std::fs::File,
+    file: File,
 }
 
 impl NodeStore {
     // Opens a node store file, creating it if it does not exist.
-    pub fn open(path: &std::path::Path) -> Result<Self, DbError> {
+    pub fn open(path: &Path) -> Result<Self, DbError> {
         let file = std::fs::OpenOptions::new()
             .create(true)
             .read(true)
