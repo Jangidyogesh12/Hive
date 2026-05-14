@@ -4,10 +4,12 @@ use crate::db::store_path::{
 use crate::errors::DbError;
 use crate::store::edge::store::EdgeStore;
 use crate::store::label_store::LabelStore;
+use crate::store::node::record::NodeRecord;
 use crate::store::node::store::NodeStore;
+use crate::store::property::record::PropertyRecord;
 use crate::store::property::store::PropertyStore;
 use crate::store::string_store::StringStore;
-use crate::types::NodeId;
+use crate::types::{NIL_ID, NodeId};
 use std::{fs, io::Error, path::Path};
 
 pub struct HiveDb {
@@ -18,15 +20,22 @@ pub struct HiveDb {
     label_store: LabelStore,
 }
 
+#[derive(Debug, PartialEq)]
 pub struct NodeProperty {
-    key_hash: u64,
-    value_type: u8,
-    inline_value: [u8; 15],
+    pub key_value: String,
+    pub key_hash: u64,
+    pub value_type: u8,
+    pub value_inline: [u8; 15],
 }
 
+#[derive(Debug, PartialEq)]
 pub struct Node {
-    id: NodeId,
-    label: String,
+    pub id: NodeId,
+    pub label: String,
+    pub first_out_edge: u64,
+    pub first_in_edge: u64,
+    pub flags: u32,
+    pub properties: Vec<NodeProperty>,
 }
 
 impl HiveDb {
@@ -61,5 +70,82 @@ impl HiveDb {
     pub fn close(self) {
         // Files are closed automatically when self is dropped. Rust's out of scop behaviour
         // concept of ownersing and borrowing
+    }
+
+    pub fn create_node(
+        &mut self,
+        label: &str,
+        props: Vec<NodeProperty>,
+    ) -> Result<NodeId, DbError> {
+        let label_id = self.label_store.get_or_create(label)?;
+        let node_id = self.node_store.count()?;
+
+        let mut first_property = NIL_ID;
+        let mut prev_property = NIL_ID;
+
+        for prop in props {
+            let prop_id = self.property_store.count()?;
+            let mut record = PropertyRecord::new(prop_id);
+
+            record.key_hash = prop.key_hash;
+            record.key_offset = self.string_store.append(&prop.key_value)?;
+            record.value_type = prop.value_type;
+            record.value_inline = prop.value_inline;
+
+            self.property_store.append(record)?;
+
+            if first_property == NIL_ID {
+                first_property = prop_id;
+            }
+
+            if prev_property != NIL_ID {
+                let mut prev = self.property_store.read(prev_property)?;
+                prev.next_property = prop_id;
+                self.property_store.update(prev_property, prev)?;
+            }
+
+            prev_property = prop_id;
+        }
+
+        let mut node_record = NodeRecord::new(node_id);
+        node_record.label_id = label_id;
+        node_record.first_property = first_property;
+        self.node_store.append(node_record)?;
+
+        Ok(node_id)
+    }
+
+    pub fn get_node(&mut self, node_id: NodeId) -> Result<Node, DbError> {
+        let record = self.node_store.read(node_id)?;
+
+        let label = self
+            .label_store
+            .get_by_id(record.label_id)
+            .unwrap_or("<unknown>")
+            .to_string();
+
+        let mut properties: Vec<NodeProperty> = Vec::new();
+        let mut curr = record.first_property;
+
+        while curr != NIL_ID {
+            let prop = self.property_store.read(curr)?;
+            let key_value = self.string_store.read(prop.key_offset)?;
+            properties.push(NodeProperty {
+                key_value,
+                key_hash: prop.key_hash,
+                value_type: prop.value_type,
+                value_inline: prop.value_inline,
+            });
+            curr = prop.next_property;
+        }
+
+        Ok(Node {
+            id: node_id,
+            label,
+            first_in_edge: record.first_in_edge,
+            first_out_edge: record.first_out_edge,
+            flags: record.flags,
+            properties,
+        })
     }
 }
