@@ -7,6 +7,7 @@ use crate::types::NIL_ID;
 pub struct PropertyRecord {
     pub id: u64,                // Logical property identifier.
     pub key_hash: u64,          // Hash of the property key name.
+    pub key_offset: u64,        // offset of the Property key name stored in string.hive
     pub value_type: u8,         // Encoded value kind (int, float, bool, string, etc.).
     pub value_inline: [u8; 15], // Inline bytes for small values or external value pointer payload.
     pub next_property: u64,     // Link to next property record in the chain, or NIL_ID.
@@ -19,13 +20,14 @@ pub type PropertyRecordBytes = [u8; PropertyRecord::SIZE];
 
 impl PropertyRecord {
     // Number of bytes occupied by one serialized property record.
-    pub const SIZE: usize = 48;
+    pub const SIZE: usize = 56;
 
     // Creates a new property record with NIL links and zeroed flags.
     pub fn new(id: u64) -> Self {
         Self {
             id,
             key_hash: NIL_ID,
+            key_offset: NIL_ID,
             value_type: 0,
             value_inline: [0; 15],
             next_property: NIL_ID,
@@ -39,11 +41,12 @@ impl PropertyRecord {
         let mut buf = [0u8; Self::SIZE];
         buf[0..8].copy_from_slice(&self.id.to_le_bytes());
         buf[8..16].copy_from_slice(&self.key_hash.to_le_bytes());
-        buf[16..17].copy_from_slice(&self.value_type.to_le_bytes());
-        buf[17..32].copy_from_slice(&self.value_inline);
-        buf[32..40].copy_from_slice(&self.next_property.to_le_bytes());
-        buf[40..44].copy_from_slice(&self.flags.to_le_bytes());
-        buf[44..48].copy_from_slice(&self.reserved.to_le_bytes());
+        buf[16..24].copy_from_slice(&self.key_offset.to_le_bytes());
+        buf[24..25].copy_from_slice(&self.value_type.to_le_bytes());
+        buf[25..40].copy_from_slice(&self.value_inline);
+        buf[40..48].copy_from_slice(&self.next_property.to_le_bytes());
+        buf[48..52].copy_from_slice(&self.flags.to_le_bytes());
+        buf[52..56].copy_from_slice(&self.reserved.to_le_bytes());
 
         return buf;
     }
@@ -53,11 +56,12 @@ impl PropertyRecord {
         return Self {
             id: u64::from_le_bytes(buf[0..8].try_into().unwrap()),
             key_hash: u64::from_le_bytes(buf[8..16].try_into().unwrap()),
-            value_type: u8::from_le_bytes(buf[16..17].try_into().unwrap()),
-            value_inline: buf[17..32].try_into().unwrap(),
-            next_property: u64::from_le_bytes(buf[32..40].try_into().unwrap()),
-            flags: u32::from_le_bytes(buf[40..44].try_into().unwrap()),
-            reserved: u32::from_le_bytes(buf[44..48].try_into().unwrap()),
+            key_offset: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
+            value_type: u8::from_le_bytes(buf[24..25].try_into().unwrap()),
+            value_inline: buf[25..40].try_into().unwrap(),
+            next_property: u64::from_le_bytes(buf[40..48].try_into().unwrap()),
+            flags: u32::from_le_bytes(buf[48..52].try_into().unwrap()),
+            reserved: u32::from_le_bytes(buf[52..56].try_into().unwrap()),
         };
     }
 }

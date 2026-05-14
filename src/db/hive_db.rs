@@ -7,6 +7,7 @@ use crate::store::label_store::LabelStore;
 use crate::store::node::store::NodeStore;
 use crate::store::property::store::PropertyStore;
 use crate::store::string_store::StringStore;
+use crate::types::NodeId;
 use std::{fs, io::Error, path::Path};
 
 pub struct HiveDb {
@@ -15,6 +16,17 @@ pub struct HiveDb {
     property_store: PropertyStore,
     string_store: StringStore,
     label_store: LabelStore,
+}
+
+pub struct NodeProperty {
+    key_hash: u64,
+    value_type: u8,
+    inline_value: [u8; 15],
+}
+
+pub struct Node {
+    id: NodeId,
+    label: String,
 }
 
 impl HiveDb {
