@@ -11,7 +11,7 @@ pub struct EdgeRecord {
     pub next_out_edge: u64,  // Link to next outgoing edge from source, or NIL_ID.
     pub next_in_edge: u64,   // Link to next incoming edge to destination, or NIL_ID.
     pub first_property: u64, // Link to first property, or NIL_ID.
-    pub edge_type: u32,      // Application-specific edge type.
+    pub label_id: u32,       // Label ID resolved via LabelStore.
     pub flags: u32,          // Bitflags for edge state.
 }
 
@@ -31,7 +31,7 @@ impl EdgeRecord {
             next_out_edge: NIL_ID,
             next_in_edge: NIL_ID,
             first_property: NIL_ID,
-            edge_type: 0,
+            label_id: 0,
             flags: 0,
         };
     }
@@ -45,7 +45,7 @@ impl EdgeRecord {
         buf[24..32].copy_from_slice(&self.next_out_edge.to_le_bytes());
         buf[32..40].copy_from_slice(&self.next_in_edge.to_le_bytes());
         buf[40..48].copy_from_slice(&self.first_property.to_le_bytes());
-        buf[48..52].copy_from_slice(&self.edge_type.to_le_bytes());
+        buf[48..52].copy_from_slice(&self.label_id.to_le_bytes());
         buf[52..56].copy_from_slice(&self.flags.to_le_bytes());
 
         return buf;
@@ -60,7 +60,7 @@ impl EdgeRecord {
             next_out_edge: u64::from_le_bytes(buf[24..32].try_into().unwrap()),
             next_in_edge: u64::from_le_bytes(buf[32..40].try_into().unwrap()),
             first_property: u64::from_le_bytes(buf[40..48].try_into().unwrap()),
-            edge_type: u32::from_le_bytes(buf[48..52].try_into().unwrap()),
+            label_id: u32::from_le_bytes(buf[48..52].try_into().unwrap()),
             flags: u32::from_le_bytes(buf[52..56].try_into().unwrap()),
         };
     }

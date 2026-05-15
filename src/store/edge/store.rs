@@ -73,4 +73,13 @@ impl EdgeStore {
 
         Ok(())
     }
+
+    pub fn count(&mut self) -> Result<u64, DbError> {
+        let len = self
+            .file
+            .seek(SeekFrom::End(0))
+            .map_err(|_| DbError::SeekError)?;
+
+        Ok(len / EdgeRecord::SIZE as u64)
+    }
 }

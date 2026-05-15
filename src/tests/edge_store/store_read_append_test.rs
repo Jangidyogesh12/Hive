@@ -16,7 +16,7 @@ fn append_then_read_returns_same_record() {
     record.next_out_edge = 33;
     record.next_in_edge = 44;
     record.first_property = 55;
-    record.edge_type = 66;
+    record.label_id = 66;
     record.flags = 7;
 
     store.append(record).unwrap();

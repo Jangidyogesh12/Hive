@@ -19,7 +19,7 @@ fn update_overwrites_existing_record() {
     updated.next_out_edge = 30;
     updated.next_in_edge = 40;
     updated.first_property = 50;
-    updated.edge_type = 60;
+    updated.label_id = 60;
     updated.flags = 99;
 
     store.update(0, updated).unwrap();
@@ -47,7 +47,7 @@ fn update_keeps_other_records_unchanged() {
 
     let mut second_updated = second;
     second_updated.src = 1000;
-    second_updated.edge_type = 44;
+    second_updated.label_id = 44;
     second_updated.flags = 77;
 
     store.update(1, second_updated).unwrap();
