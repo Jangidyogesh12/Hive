@@ -76,10 +76,10 @@ All resolved in Week 1. No outstanding bugs.
 | 6 | ~~Build `HiveDb` struct~~ | ~~Completed in `src/db/hive_db.rs` + `src/db/store_path.rs`. `HiveDb` holds `NodeStore`, `EdgeStore`, `PropertyStore`, `StringStore`, `LabelStore`. `ensure_db_dir()` uses `create_dir_all`. `DbError` implements `From<std::io::Error>`. `HiveDb::open(path)` constructs all store paths and opens all files: `nodes.hive`, `edges.hive`, `props.hive`, `strings.hive`, `labels.hive`. `HiveDb::close(self)` added.~~ |
 | 7 | ~~`create_node` + `get_node`~~ | ~~`create_node(label, props) -> NodeId` — resolve label, create NodeRecord, link property chain. `get_node(id) -> Node` — read record, resolve label string, walk property chain, return rich `Node` struct. Tests in `src/tests/db/hive_db_test.rs`: create+get no props, single/multi prop, label dedup, out-of-bounds, persistence across reopen.~~ |
 | 8 | ~~`create_edge` + `get_edge`~~ | ~~`create_edge(src, dst, edge_type, props) -> EdgeId` — create EdgeRecord, load label, link properties. `get_edge(id) -> Edge` — read record, resolve label, walk property chain. 9 tests: create/get with no/single/multi props, label dedup, out-of-bounds, persistence across reopen, edge+node coexistence, sequential IDs~~ |
-| 9 | `Value` type + property helpers | Create `src/value.rs` with `Value` enum: `Null`, `Integer(i64)`, `Float(f64)`, `Boolean(bool)`, `String(String)`. Implement `to_inline_bytes()` and `from_bytes()`. Add `set_property()` and `get_property()` helpers on HiveDb |
+| 9 | ~~`Value` type + property helpers~~ | ~~Create `src/value.rs` with `Value` enum: `Null`, `Integer(i64)`, `Float(f64)`, `Boolean(bool)`, `String(String)`. Implement `to_inline_bytes()` and `from_bytes()`. Add `set_node_property()`, `get_node_property()`, `set_edge_property()`, `get_edge_property()` helpers on HiveDb~~ |
 | 10 | `delete_node` + `delete_edge` + `get_neighbors` | `delete_node(id)` — set DELETED flag. `delete_edge(id)` — unlink from src out-edge chain and dst in-edge chain, set DELETED flag. `get_out_neighbors(id) -> Vec<NodeId>` — walk out-edge list, collect dst ids. `get_in_neighbors(id) -> Vec<NodeId>` — walk in-edge list, collect src ids |
 
-**Week 2 Deliverable:** Working programmatic Rust API for creating/querying a property graph. (Days 6-8 complete; Days 9-10 in progress.)
+**Week 2 Deliverable:** Working programmatic Rust API for creating/querying a property graph. (Days 6-9 complete; Day 10 in progress.)
 
 ---
 
@@ -218,10 +218,10 @@ All resolved in Week 1. No outstanding bugs.
 - [x] HiveDb::open / HiveDb::close
 - [x] HiveDb::create_node (label + property chain linking)
 - [x] HiveDb::get_node (record read + label resolution + property chain walk)
-- [x] HiveDb tests — `src/tests/db/hive_db_test.rs` (14 tests: create/get nodes+edges, properties, label dedup, out-of-bounds, persistence, edge+node coexistence, sequential edge IDs)
+- [x] HiveDb tests — `src/tests/db/hive_db_test.rs` (22 tests: create/get nodes+edges, properties, label dedup, out-of-bounds, persistence, edge+node coexistence, sequential edge IDs, set/get property helpers for nodes + edges)
 - [x] HiveDb::create_edge (label + property chain linking) + get_edge (record read + label resolution + property chain walk)
-- [ ] Value type (`src/value.rs` with Null, Integer, Float, Boolean, String)
-- [ ] set_property / get_property helpers
+- [x] Value type (`src/value.rs` with Null, Integer, Float, Boolean, String, to_inline_bytes, from_bytes)
+- [x] set_property / get_property helpers (set_node_property, get_node_property, set_edge_property, get_edge_property)
 - [ ] delete_node / delete_edge
 - [ ] get_neighbors (out/in edge traversal)
 - [ ] Free list
