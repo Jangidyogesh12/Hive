@@ -11,6 +11,7 @@ use crate::store::property::record::PropertyRecord;
 use crate::store::property::store::PropertyStore;
 use crate::store::string_store::StringStore;
 use crate::types::{EdgeId, NIL_ID, NodeId};
+use crate::value::{self, LONG_STRING, Value};
 use std::{fs, io::Error, path::Path};
 
 pub struct HiveDb {
@@ -244,5 +245,179 @@ impl HiveDb {
             flags: record.flags,
             properties,
         })
+    }
+
+    pub fn set_node_property(
+        &mut self,
+        node_id: NodeId,
+        key: &str,
+        value: Value,
+    ) -> Result<(), DbError> {
+        let node = self.node_store.read(node_id)?;
+        let key_hash = value::hash_key(key);
+        let key_offset = self.string_store.append(key)?;
+
+        let (value_type, mut value_inline) = value.to_inline_bytes();
+
+        if value_type == LONG_STRING {
+            if let Value::String(ref s) = value {
+                let offset = self.string_store.append(s)?;
+                value_inline[..8].copy_from_slice(&offset.to_le_bytes());
+            }
+        }
+
+        let mut curr = node.first_property;
+        while curr != NIL_ID {
+            let prop = self.property_store.read(curr)?;
+            if prop.key_hash == key_hash {
+                let mut updated = prop;
+                updated.value_type = value_type;
+                updated.value_inline = value_inline;
+                updated.key_offset = key_offset;
+                self.property_store.update(curr, updated)?;
+                return Ok(());
+            }
+            curr = prop.next_property;
+        }
+
+        let prop_id = self.property_store.count()?;
+        let mut record = PropertyRecord::new(prop_id);
+        record.key_hash = key_hash;
+        record.key_offset = key_offset;
+        record.value_type = value_type;
+        record.value_inline = value_inline;
+
+        if node.first_property == NIL_ID {
+            let mut node = node;
+            node.first_property = prop_id;
+            self.node_store.update(node_id, node)?;
+        } else {
+            let mut tail = node.first_property;
+            loop {
+                let prop = self.property_store.read(tail)?;
+                if prop.next_property == NIL_ID {
+                    break;
+                }
+                tail = prop.next_property;
+            }
+            let mut last = self.property_store.read(tail)?;
+            last.next_property = prop_id;
+            self.property_store.update(tail, last)?;
+        }
+
+        self.property_store.append(record)?;
+        Ok(())
+    }
+
+    pub fn get_node_property(
+        &mut self,
+        node_id: NodeId,
+        key: &str,
+    ) -> Result<Option<Value>, DbError> {
+        let node = self.node_store.read(node_id)?;
+        let key_hash = value::hash_key(key);
+
+        let mut curr = node.first_property;
+        while curr != NIL_ID {
+            let prop = self.property_store.read(curr)?;
+            if prop.key_hash == key_hash {
+                if prop.value_type == LONG_STRING {
+                    let offset = u64::from_le_bytes(prop.value_inline[..8].try_into().unwrap());
+                    let s = self.string_store.read(offset)?;
+                    return Ok(Some(Value::String(s)));
+                }
+                return Ok(Some(Value::from_bytes(prop.value_type, prop.value_inline)));
+            }
+            curr = prop.next_property;
+        }
+
+        Ok(None)
+    }
+
+    pub fn set_edge_property(
+        &mut self,
+        edge_id: EdgeId,
+        key: &str,
+        value: Value,
+    ) -> Result<(), DbError> {
+        let edge = self.edge_store.read(edge_id)?;
+        let key_hash = value::hash_key(key);
+        let key_offset = self.string_store.append(key)?;
+
+        let (value_type, mut value_inline) = value.to_inline_bytes();
+
+        if value_type == LONG_STRING {
+            if let Value::String(ref s) = value {
+                let offset = self.string_store.append(s)?;
+                value_inline[..8].copy_from_slice(&offset.to_le_bytes());
+            }
+        }
+
+        let mut curr = edge.first_property;
+        while curr != NIL_ID {
+            let prop = self.property_store.read(curr)?;
+            if prop.key_hash == key_hash {
+                let mut updated = prop;
+                updated.value_type = value_type;
+                updated.value_inline = value_inline;
+                updated.key_offset = key_offset;
+                self.property_store.update(curr, updated)?;
+                return Ok(());
+            }
+            curr = prop.next_property;
+        }
+
+        let prop_id = self.property_store.count()?;
+        let mut record = PropertyRecord::new(prop_id);
+        record.key_hash = key_hash;
+        record.key_offset = key_offset;
+        record.value_type = value_type;
+        record.value_inline = value_inline;
+
+        if edge.first_property == NIL_ID {
+            let mut edge = edge;
+            edge.first_property = prop_id;
+            self.edge_store.update(edge_id, edge)?;
+        } else {
+            let mut tail = edge.first_property;
+            loop {
+                let prop = self.property_store.read(tail)?;
+                if prop.next_property == NIL_ID {
+                    break;
+                }
+                tail = prop.next_property;
+            }
+            let mut last = self.property_store.read(tail)?;
+            last.next_property = prop_id;
+            self.property_store.update(tail, last)?;
+        }
+
+        self.property_store.append(record)?;
+        Ok(())
+    }
+
+    pub fn get_edge_property(
+        &mut self,
+        edge_id: EdgeId,
+        key: &str,
+    ) -> Result<Option<Value>, DbError> {
+        let edge = self.edge_store.read(edge_id)?;
+        let key_hash = value::hash_key(key);
+
+        let mut curr = edge.first_property;
+        while curr != NIL_ID {
+            let prop = self.property_store.read(curr)?;
+            if prop.key_hash == key_hash {
+                if prop.value_type == LONG_STRING {
+                    let offset = u64::from_le_bytes(prop.value_inline[..8].try_into().unwrap());
+                    let s = self.string_store.read(offset)?;
+                    return Ok(Some(Value::String(s)));
+                }
+                return Ok(Some(Value::from_bytes(prop.value_type, prop.value_inline)));
+            }
+            curr = prop.next_property;
+        }
+
+        Ok(None)
     }
 }
