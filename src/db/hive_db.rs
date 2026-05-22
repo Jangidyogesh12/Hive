@@ -1,9 +1,11 @@
 use crate::db::store_path::{
-    EDGE_STORE_FILE, LABEL_STORE_FILE, NODE_STORE_FILE, PROP_STORE_FILE, STRING_STORE_FILE,
+    EDGE_STORE_FILE, FREE_LIST_EDGE, FREE_LIST_NODE, LABEL_STORE_FILE, NODE_STORE_FILE,
+    PROP_STORE_FILE, STRING_STORE_FILE,
 };
 use crate::errors::DbError;
 use crate::store::edge::record::EdgeRecord;
 use crate::store::edge::store::EdgeStore;
+use crate::store::free_list::FreeList;
 use crate::store::label_store::LabelStore;
 use crate::store::node::record::NodeRecord;
 use crate::store::node::store::NodeStore;
@@ -21,6 +23,8 @@ pub struct HiveDb {
     property_store: PropertyStore,
     string_store: StringStore,
     label_store: LabelStore,
+    node_free_list: FreeList,
+    edge_free_list: FreeList,
 }
 
 #[derive(Debug, PartialEq)]
@@ -66,12 +70,16 @@ impl HiveDb {
         let prop_store_path = path.join(PROP_STORE_FILE);
         let string_store_path = path.join(STRING_STORE_FILE);
         let label_store_path = path.join(LABEL_STORE_FILE);
+        let node_free_list_path = path.join(FREE_LIST_NODE);
+        let edge_free_list_path = path.join(FREE_LIST_EDGE);
 
         let node_store = NodeStore::open(&node_store_path)?;
         let edge_store = EdgeStore::open(&edge_store_path)?;
         let property_store = PropertyStore::open(&prop_store_path)?;
         let string_store = StringStore::open(&string_store_path)?;
         let label_store = LabelStore::open(&label_store_path)?;
+        let node_free_list = FreeList::open(&node_free_list_path)?;
+        let edge_free_list = FreeList::open(&edge_free_list_path)?;
 
         Ok(Self {
             node_store,
@@ -79,6 +87,8 @@ impl HiveDb {
             property_store,
             string_store,
             label_store,
+            node_free_list,
+            edge_free_list,
         })
     }
 
@@ -89,7 +99,10 @@ impl HiveDb {
 
     pub fn create_node(&mut self, label: &str, props: Vec<Property>) -> Result<NodeId, DbError> {
         let label_id = self.label_store.get_or_create(label)?;
-        let node_id = self.node_store.count()?;
+        let node_id = match self.node_free_list.pop() {
+            Some(id) => id,
+            None => self.node_store.count()?,
+        };
 
         let mut first_property = NIL_ID;
         let mut prev_property = NIL_ID;
@@ -133,8 +146,11 @@ impl HiveDb {
         label: &str,
         props: Vec<Property>,
     ) -> Result<EdgeId, DbError> {
-        let edge_id = self.edge_store.count()?;
         let label_id = self.label_store.get_or_create(label)?;
+        let edge_id = match self.edge_free_list.pop() {
+            Some(id) => id,
+            None => self.edge_store.count()?,
+        };
 
         let mut first_property = NIL_ID;
         let mut prev_property = NIL_ID;
@@ -437,7 +453,7 @@ impl HiveDb {
         record.flags |= DELETED;
 
         self.node_store.update(id, record)?;
-
+        self.node_free_list.push(id)?;
         Ok(id)
     }
     pub fn delete_edge(&mut self, id: u64) -> Result<u64, DbError> {
@@ -482,6 +498,7 @@ impl HiveDb {
         // Ste DELETED flag in the edge
         record.flags |= DELETED;
         self.edge_store.update(id, record)?;
+        self.edge_free_list.push(id)?;
 
         Ok(id)
     }
