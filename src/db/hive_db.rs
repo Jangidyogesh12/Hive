@@ -2,7 +2,6 @@ use crate::db::store_path::{
     EDGE_STORE_FILE, LABEL_STORE_FILE, NODE_STORE_FILE, PROP_STORE_FILE, STRING_STORE_FILE,
 };
 use crate::errors::DbError;
-use crate::store::edge;
 use crate::store::edge::record::EdgeRecord;
 use crate::store::edge::store::EdgeStore;
 use crate::store::label_store::LabelStore;
@@ -171,6 +170,16 @@ impl HiveDb {
         edge_record.dst = dst;
         edge_record.src = src;
         edge_record.first_property = first_property;
+
+        let mut src_node = self.node_store.read(src)?;
+        edge_record.next_out_edge = src_node.first_out_edge;
+        src_node.first_out_edge = edge_id;
+        self.node_store.update(src, src_node)?;
+
+        let mut dst_node = self.node_store.read(dst)?;
+        edge_record.next_in_edge = dst_node.first_in_edge;
+        dst_node.first_in_edge = edge_id;
+        self.node_store.update(dst, dst_node)?;
 
         self.edge_store.append(edge_record)?;
 
