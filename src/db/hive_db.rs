@@ -7,9 +7,10 @@ use crate::store::edge::store::EdgeStore;
 use crate::store::label_store::LabelStore;
 use crate::store::node::record::NodeRecord;
 use crate::store::node::store::NodeStore;
-use crate::store::property::record::PropertyRecord;
+use crate::store::property::record::{self, PropertyRecord};
 use crate::store::property::store::PropertyStore;
 use crate::store::string_store::StringStore;
+use crate::types::DELETED;
 use crate::types::{EdgeId, NIL_ID, NodeId};
 use crate::value::{self, LONG_STRING, Value};
 use std::{fs, io::Error, path::Path};
@@ -419,5 +420,59 @@ impl HiveDb {
         }
 
         Ok(None)
+    }
+
+    pub fn delete_node(&mut self, id: u64) -> Result<u64, DbError> {
+        let mut record = self.node_store.read(id)?;
+        record.flags |= DELETED;
+
+        self.node_store.update(id, record)?;
+
+        Ok(id)
+    }
+    pub fn delete_edge(&mut self, id: u64) -> Result<u64, DbError> {
+        let mut record = self.edge_store.read(id)?;
+
+        // Unlink the source node
+        let mut src_node = self.node_store.read(record.src)?;
+        if src_node.first_out_edge == id {
+            src_node.first_out_edge = record.next_out_edge;
+        } else {
+            let mut curr = src_node.first_out_edge;
+            while curr != NIL_ID {
+                let mut curr_edge = self.edge_store.read(curr)?;
+                if curr_edge.next_out_edge == id {
+                    curr_edge.next_out_edge = record.next_out_edge;
+                    self.edge_store.update(curr, curr_edge)?;
+                    break;
+                }
+                curr = curr_edge.next_out_edge;
+            }
+        }
+        self.node_store.update(record.src, src_node)?;
+
+        // Unlink the destination node
+        let mut dst_node = self.node_store.read(record.dst)?;
+        if dst_node.first_in_edge == id {
+            dst_node.first_in_edge = record.next_in_edge;
+        } else {
+            let mut curr = dst_node.first_in_edge;
+            while curr != NIL_ID {
+                let mut curr_edge = self.edge_store.read(curr)?;
+                if curr_edge.next_in_edge == id {
+                    curr_edge.next_in_edge = record.next_in_edge;
+                    self.edge_store.update(curr, curr_edge)?;
+                    break;
+                }
+                curr = curr_edge.next_in_edge;
+            }
+        }
+        self.node_store.update(record.dst, dst_node)?;
+
+        // Ste DELETED flag in the edge
+        record.flags |= DELETED;
+        self.edge_store.update(id, record)?;
+
+        Ok(id)
     }
 }
