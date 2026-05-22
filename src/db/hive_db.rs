@@ -2,12 +2,13 @@ use crate::db::store_path::{
     EDGE_STORE_FILE, LABEL_STORE_FILE, NODE_STORE_FILE, PROP_STORE_FILE, STRING_STORE_FILE,
 };
 use crate::errors::DbError;
+use crate::store::edge;
 use crate::store::edge::record::EdgeRecord;
 use crate::store::edge::store::EdgeStore;
 use crate::store::label_store::LabelStore;
 use crate::store::node::record::NodeRecord;
 use crate::store::node::store::NodeStore;
-use crate::store::property::record::{self, PropertyRecord};
+use crate::store::property::record::PropertyRecord;
 use crate::store::property::store::PropertyStore;
 use crate::store::string_store::StringStore;
 use crate::types::DELETED;
@@ -474,5 +475,47 @@ impl HiveDb {
         self.edge_store.update(id, record)?;
 
         Ok(id)
+    }
+
+    pub fn get_out_neighbors(&mut self, id: NodeId) -> Result<Vec<NodeId>, DbError> {
+        let mut neighbors: Vec<NodeId> = Vec::new();
+
+        let record = self.node_store.read(id)?;
+
+        let mut curr = record.first_out_edge;
+
+        while curr != NIL_ID {
+            let edge_record = self.edge_store.read(curr)?;
+            if (edge_record.flags & DELETED) == 0 {
+                let dst_node = self.node_store.read(edge_record.dst)?;
+                if (dst_node.flags & DELETED) == 0 {
+                    neighbors.push(edge_record.dst);
+                }
+            }
+            curr = edge_record.next_out_edge;
+        }
+
+        Ok(neighbors)
+    }
+
+    pub fn get_in_neighbors(&mut self, id: NodeId) -> Result<Vec<NodeId>, DbError> {
+        let mut neighbors: Vec<NodeId> = Vec::new();
+
+        let record = self.node_store.read(id)?;
+
+        let mut curr = record.first_in_edge;
+
+        while curr != NIL_ID {
+            let edge_record = self.edge_store.read(curr)?;
+            if (edge_record.flags & DELETED) == 0 {
+                let src_node = self.node_store.read(edge_record.src)?;
+                if (src_node.flags & DELETED) == 0 {
+                    neighbors.push(edge_record.src);
+                }
+            }
+            curr = edge_record.next_in_edge;
+        }
+
+        Ok(neighbors)
     }
 }
