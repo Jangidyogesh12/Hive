@@ -1,11 +1,12 @@
 use crate::db::store_path::{
-    EDGE_STORE_FILE, FREE_LIST_EDGE, FREE_LIST_NODE, LABEL_STORE_FILE, NODE_STORE_FILE,
-    PROP_STORE_FILE, STRING_STORE_FILE,
+    EDGE_STORE_FILE, FREE_LIST_EDGE, FREE_LIST_NODE, LABEL_STORE_FILE, META_FILE,
+    NODE_STORE_FILE, PROP_STORE_FILE, STRING_STORE_FILE,
 };
 use crate::errors::DbError;
 use crate::store::edge::record::EdgeRecord;
 use crate::store::edge::store::EdgeStore;
 use crate::store::free_list::FreeList;
+use crate::store::header::{self, DbHeader, CURRENT_VERSION};
 use crate::store::label_store::LabelStore;
 use crate::store::node::record::NodeRecord;
 use crate::store::node::store::NodeStore;
@@ -15,9 +16,12 @@ use crate::store::string_store::StringStore;
 use crate::types::DELETED;
 use crate::types::{EdgeId, NIL_ID, NodeId};
 use crate::value::{self, LONG_STRING, Value};
+use std::path::PathBuf;
 use std::{fs, io::Error, path::Path};
 
 pub struct HiveDb {
+    header: DbHeader,
+    meta_path: PathBuf,
     node_store: NodeStore,
     edge_store: EdgeStore,
     property_store: PropertyStore,
@@ -65,6 +69,20 @@ impl HiveDb {
     pub fn open(path: &Path) -> Result<Self, DbError> {
         Self::ensure_db_dir(path)?;
 
+        let meta_path = path.join(META_FILE);
+
+        let header = if meta_path.exists() {
+            let h = header::read_header(&meta_path)?;
+            if h.version != CURRENT_VERSION {
+                return Err(DbError::UnsupportedVersion);
+            }
+            h
+        } else {
+            let h = DbHeader::new();
+            header::write_header(&meta_path, h)?;
+            h
+        };
+
         let node_store_path = path.join(NODE_STORE_FILE);
         let edge_store_path = path.join(EDGE_STORE_FILE);
         let prop_store_path = path.join(PROP_STORE_FILE);
@@ -82,6 +100,8 @@ impl HiveDb {
         let edge_free_list = FreeList::open(&edge_free_list_path)?;
 
         Ok(Self {
+            header,
+            meta_path,
             node_store,
             edge_store,
             property_store,
@@ -92,12 +112,16 @@ impl HiveDb {
         })
     }
 
+    fn flush_header(&mut self) -> Result<(), DbError> {
+        header::write_header(&self.meta_path, self.header)
+    }
+
     pub fn close(self) {
-        // Files are closed automatically when self is dropped. Rust's out of scop behaviour
-        // concept of ownersing and borrowing
+        let _ = header::write_header(&self.meta_path, self.header);
     }
 
     pub fn create_node(&mut self, label: &str, props: Vec<Property>) -> Result<NodeId, DbError> {
+        let prop_count = props.len() as u64;
         let label_id = self.label_store.get_or_create(label)?;
         let node_id = match self.node_free_list.pop() {
             Some(id) => id,
@@ -136,6 +160,10 @@ impl HiveDb {
         node_record.first_property = first_property;
         self.node_store.append(node_record)?;
 
+        self.header.node_count += 1;
+        self.header.property_count += prop_count;
+        self.flush_header()?;
+
         Ok(node_id)
     }
 
@@ -146,6 +174,7 @@ impl HiveDb {
         label: &str,
         props: Vec<Property>,
     ) -> Result<EdgeId, DbError> {
+        let prop_count = props.len() as u64;
         let label_id = self.label_store.get_or_create(label)?;
         let edge_id = match self.edge_free_list.pop() {
             Some(id) => id,
@@ -198,6 +227,10 @@ impl HiveDb {
         self.node_store.update(dst, dst_node)?;
 
         self.edge_store.append(edge_record)?;
+
+        self.header.edge_count += 1;
+        self.header.property_count += prop_count;
+        self.flush_header()?;
 
         Ok(edge_id)
     }
@@ -333,6 +366,8 @@ impl HiveDb {
         }
 
         self.property_store.append(record)?;
+        self.header.property_count += 1;
+        self.flush_header()?;
         Ok(())
     }
 
@@ -420,6 +455,8 @@ impl HiveDb {
         }
 
         self.property_store.append(record)?;
+        self.header.property_count += 1;
+        self.flush_header()?;
         Ok(())
     }
 
@@ -450,14 +487,20 @@ impl HiveDb {
 
     pub fn delete_node(&mut self, id: u64) -> Result<u64, DbError> {
         let mut record = self.node_store.read(id)?;
+        let was_deleted = (record.flags & DELETED) != 0;
         record.flags |= DELETED;
 
         self.node_store.update(id, record)?;
         self.node_free_list.push(id)?;
+        if !was_deleted {
+            self.header.node_count -= 1;
+            self.flush_header()?;
+        }
         Ok(id)
     }
     pub fn delete_edge(&mut self, id: u64) -> Result<u64, DbError> {
         let mut record = self.edge_store.read(id)?;
+        let was_deleted = (record.flags & DELETED) != 0;
 
         // Unlink the source node
         let mut src_node = self.node_store.read(record.src)?;
@@ -499,6 +542,11 @@ impl HiveDb {
         record.flags |= DELETED;
         self.edge_store.update(id, record)?;
         self.edge_free_list.push(id)?;
+
+        if !was_deleted {
+            self.header.edge_count -= 1;
+            self.flush_header()?;
+        }
 
         Ok(id)
     }

@@ -10,6 +10,8 @@ pub enum DbError {
     SeekError,          // Seeking to a file offset failed.
     WriteError,         // Writing bytes to the file failed.
     ReadError,          // Reading bytes from the file failed.
+    InvalidHeader,      // File magic bytes do not match expected signature.
+    UnsupportedVersion, // File format version is not supported by this library.
 }
 
 impl Display for DbError {
@@ -20,6 +22,8 @@ impl Display for DbError {
             DbError::SeekError => write!(f, "Failed to seek in database file"),
             DbError::WriteError => write!(f, "Failed to write database file"),
             DbError::ReadError => write!(f, "Failed to read database file"),
+            DbError::InvalidHeader => write!(f, "Invalid database file header"),
+            DbError::UnsupportedVersion => write!(f, "Unsupported database version"),
         }
     }
 }
