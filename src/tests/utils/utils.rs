@@ -1,4 +1,4 @@
-// Shared helpers for creating and cleaning temporary files and directories in tests.
+use crate::db::hive_db::Property;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,4 +30,18 @@ pub fn cleanup_file(path: &std::path::Path) {
 
 pub fn cleanup_dir(path: &std::path::Path) {
     let _ = std::fs::remove_dir_all(path);
+}
+
+pub fn helper_property(
+    key: &str,
+    key_hash: u64,
+    value_type: u8,
+    value_inline: [u8; 15],
+) -> Property {
+    Property {
+        key_value: key.to_string(),
+        key_hash,
+        value_type,
+        value_inline,
+    }
 }
