@@ -20,7 +20,7 @@ impl NodeRecord {
     // Number of bytes occupied by one serialized node record.
     pub const SIZE: usize = 40;
 
-    // Creates a new node record with NIL links and zeroed flags.
+    /// Creates a new node record with NIL links and zeroed flags and label_id.
     pub fn new(id: u64) -> Self {
         return Self {
             id,
@@ -32,7 +32,7 @@ impl NodeRecord {
         };
     }
 
-    // Serializes a node record into its fixed-size little-endian format.
+    /// Serializes the record into its 40-byte little-endian representation.
     pub fn to_bytes(self) -> NodeRecordBytes {
         let mut buf = [0u8; Self::SIZE];
         buf[0..8].copy_from_slice(&self.id.to_le_bytes());
@@ -45,7 +45,7 @@ impl NodeRecord {
         return buf;
     }
 
-    // Deserializes a node record from its fixed-size byte representation.
+    /// Deserializes a node record from its 40-byte little-endian representation.
     pub fn from_bytes(buf: NodeRecordBytes) -> Self {
         return Self {
             id: u64::from_le_bytes(buf[0..8].try_into().unwrap()),

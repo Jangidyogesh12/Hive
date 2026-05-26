@@ -6,5 +6,6 @@ mod label_store;
 mod node_store;
 mod property_store;
 mod string_store;
+mod query;
 mod record;
 mod utils;

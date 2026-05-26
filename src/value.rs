@@ -15,6 +15,8 @@ pub enum Value {
 }
 
 impl Value {
+    /// Encodes the value into a type tag and a 15-byte inline buffer.
+    /// Long strings set `LONG_STRING` type and store the offset separately.
     pub fn to_inline_bytes(&self) -> (u8, [u8; 15]) {
         match self {
             Value::Null => (NULL, [0u8; 15]),
@@ -46,6 +48,7 @@ impl Value {
         }
     }
 
+    /// Decodes a value from a type tag and a 15-byte inline buffer.
     pub fn from_bytes(value_type: u8, value_inline: [u8; 15]) -> Self {
         match value_type {
             NULL => Value::Null,
@@ -67,6 +70,8 @@ impl Value {
     }
 }
 
+/// Computes the FNV-1a 64-bit hash of the given key string, used for
+/// property key lookups.
 pub fn hash_key(key: &str) -> u64 {
     const FNV_OFFSET: u64 = 14695981039346656037;
     const FNV_PRIME: u64 = 1099511628211;

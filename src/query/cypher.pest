@@ -1,0 +1,66 @@
+statement = { SOI ~ (create_stmt | match_stmt | delete_stmt | set_stmt) ~ EOI }
+
+create_stmt = { "CREATE" ~ pattern }
+
+match_stmt = { "MATCH" ~ pattern ~ where_clause? ~ return_clause }
+
+delete_stmt = { "DELETE" ~ variable }
+
+set_stmt = { "SET" ~ set_item }
+
+set_item = { variable ~ "." ~ identifier ~ "=" ~ expression }
+
+pattern = { node_pattern ~ (rel_pattern ~ node_pattern)? }
+
+node_pattern = { "(" ~ variable ~ (":" ~ identifier)? ~ property_map? ~ ")" }
+
+rel_pattern = { left_arrow_rel | right_arrow_rel | undirected_rel }
+
+left_arrow_rel = { "<-" ~ "[" ~ rel_detail ~ "]" ~ "-" }
+
+right_arrow_rel = { "-" ~ "[" ~ rel_detail ~ "]" ~ "->" }
+
+undirected_rel = { "-" ~ "[" ~ rel_detail ~ "]" ~ "-" }
+
+rel_detail = { variable? ~ (":" ~ identifier)? ~ property_map? }
+
+property_map = { "{" ~ property_pair ~ ("," ~ property_pair)* ~ "}" }
+
+property_pair = { identifier ~ ":" ~ expression }
+
+where_clause = { "WHERE" ~ expression }
+
+return_clause = { "RETURN" ~ return_item ~ ("," ~ return_item)* }
+
+return_item = { expression ~ ("AS" ~ identifier)? }
+
+expression = { or_expr }
+
+or_expr = { and_expr ~ ("OR" ~ and_expr)* }
+
+and_expr = { comparison ~ ("AND" ~ comparison)* }
+
+comparison = { atom ~ (operator ~ atom)? }
+
+operator = { "=" | "<>" | ">" | ">=" | "<" | "<=" }
+
+atom = _{ boolean | float | integer | string | property_access | variable | paren_expr }
+
+paren_expr = { "(" ~ expression ~ ")" }
+
+property_access = { variable ~ "." ~ identifier }
+
+variable = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+
+identifier = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+
+integer = @{ ASCII_DIGIT+ }
+
+float = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+
+string = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+boolean = @{ "true" | "false" }
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT = _{ "//" ~ (!"\n" ~ ANY)* }

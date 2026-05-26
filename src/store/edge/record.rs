@@ -22,7 +22,7 @@ impl EdgeRecord {
     // Number of bytes occupied by one serialized edge record.
     pub const SIZE: usize = 56;
 
-    // Creates a new edge record with NIL links and zeroed metadata.
+    /// Creates a new edge record with NIL links and zeroed metadata.
     pub fn new(id: u64) -> Self {
         return Self {
             id,
@@ -36,7 +36,7 @@ impl EdgeRecord {
         };
     }
 
-    // Serializes an edge record into its fixed-size little-endian format.
+    /// Serializes the record into its 56-byte little-endian representation.
     pub fn to_bytes(self) -> EdgeRecordBytes {
         let mut buf = [0u8; Self::SIZE];
         buf[0..8].copy_from_slice(&self.id.to_le_bytes());
@@ -51,7 +51,7 @@ impl EdgeRecord {
         return buf;
     }
 
-    // Deserializes an edge record from its fixed-size byte representation.
+    /// Deserializes an edge record from its 56-byte little-endian representation.
     pub fn from_bytes(buf: EdgeRecordBytes) -> Self {
         return Self {
             id: u64::from_le_bytes(buf[0..8].try_into().unwrap()),

@@ -9,6 +9,7 @@ pub struct StringStore {
 }
 
 impl StringStore {
+    /// Opens the string store file at `path`, creating it if it does not exist.
     pub fn open(path: &Path) -> Result<Self, DbError> {
         let file = OpenOptions::new()
             .create(true)
@@ -20,6 +21,8 @@ impl StringStore {
         Ok(Self { file })
     }
 
+    /// Appends a length-prefixed string to the end of the file.
+    /// Returns the file offset where the string was written.
     pub fn append(&mut self, s: &str) -> Result<u64, DbError> {
         let bytes = s.as_bytes();
         let offset = self
@@ -41,6 +44,7 @@ impl StringStore {
         return Ok(offset);
     }
 
+    /// Reads a length-prefixed string from the given file offset.
     pub fn read(&mut self, offset: u64) -> Result<String, DbError> {
         self.file
             .seek(SeekFrom::Start(offset))

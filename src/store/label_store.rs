@@ -15,6 +15,7 @@ pub struct LabelStore {
 }
 
 impl LabelStore {
+    /// Opens the label store file at `path`, creating it if it does not exist.
     pub fn open(path: &Path) -> Result<Self, DbError> {
         let file = OpenOptions::new()
             .create(true)
@@ -32,6 +33,8 @@ impl LabelStore {
         })
     }
 
+    /// Resolves a label string to its numeric ID, creating a new entry if
+    /// the label has not been seen before.
     pub fn get_or_create(&mut self, label: &str) -> Result<u32, DbError> {
         if let Some(&id) = self.label_to_id.get(label) {
             return Ok(id);
@@ -64,6 +67,8 @@ impl LabelStore {
         return Ok(id);
     }
 
+    /// Looks up a label string by its numeric ID.
+    /// Returns `None` if the ID is not registered.
     pub fn get_by_id(&self, id: u32) -> Option<&str> {
         return self.id_to_label.get(&id).map(|s| s.as_str());
     }

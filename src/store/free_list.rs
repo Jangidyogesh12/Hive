@@ -10,6 +10,7 @@ pub struct FreeList {
 }
 
 impl FreeList {
+    /// Opens the free list file at `path`, loading any previously freed IDs.
     pub fn open(path: &Path) -> Result<Self, DbError> {
         let mut file = OpenOptions::new()
             .create(true)
@@ -39,17 +40,20 @@ impl FreeList {
         Ok(Self { freed, file })
     }
 
+    /// Pops the most recently freed ID for reuse, flushing the list to disk.
     pub fn pop(&mut self) -> Option<u64> {
         let id = self.freed.pop()?;
         self.flush().ok()?;
         Some(id)
     }
 
+    /// Pushes a freed ID onto the list and flushes to disk.
     pub fn push(&mut self, id: u64) -> Result<(), DbError> {
         self.freed.push(id);
         self.flush()
     }
 
+    /// Writes the entire in-memory free list to disk, truncating the file first.
     pub fn flush(&mut self) -> Result<(), DbError> {
         self.file.set_len(0).map_err(|_| DbError::WriteError)?;
 
@@ -67,10 +71,12 @@ impl FreeList {
         Ok(())
     }
 
+    /// Returns the number of freed IDs currently in the list.
     pub fn len(&self) -> usize {
         self.freed.len()
     }
 
+    /// Returns true if there are no freed IDs available.
     pub fn is_empty(&self) -> bool {
         self.freed.is_empty()
     }

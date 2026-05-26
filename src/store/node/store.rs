@@ -14,7 +14,7 @@ pub struct NodeStore {
 }
 
 impl NodeStore {
-    // Opens a node store file, creating it if it does not exist.
+    /// Opens the node store file at `path`, creating it if it does not exist.
     pub fn open(path: &Path) -> Result<Self, DbError> {
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -26,7 +26,7 @@ impl NodeStore {
         Ok(Self { file })
     }
 
-    // Appends a node record at the end of the file.
+    /// Appends a node record at the end of the file.
     pub fn append(&mut self, record: NodeRecord) -> Result<(), DbError> {
         let buf = record.to_bytes();
 
@@ -41,7 +41,7 @@ impl NodeStore {
         Ok(())
     }
 
-    // Reads a node record by zero-based record index.
+    /// Reads a node record by its zero-based record index.
     pub fn read(&mut self, idx: u64) -> Result<NodeRecord, DbError> {
         let offset = idx * NodeRecord::SIZE as u64;
 
@@ -57,7 +57,7 @@ impl NodeStore {
         Ok(NodeRecord::from_bytes(buf))
     }
 
-    // Updates a node record at the given zero-based record index.
+    /// Updates (overwrites) a node record at the given zero-based index.
     pub fn update(&mut self, idx: u64, record: NodeRecord) -> Result<(), DbError> {
         let offset = idx * NodeRecord::SIZE as u64;
 
@@ -74,6 +74,7 @@ impl NodeStore {
         Ok(())
     }
 
+    /// Returns the total number of node records in the file.
     pub fn count(&mut self) -> Result<u64, DbError> {
         let len = self
             .file

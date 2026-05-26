@@ -14,7 +14,7 @@ pub struct EdgeStore {
 }
 
 impl EdgeStore {
-    // Opens an edge store file, creating it if it does not exist.
+    /// Opens the edge store file at `path`, creating it if it does not exist.
     pub fn open(path: &Path) -> Result<Self, DbError> {
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -26,7 +26,7 @@ impl EdgeStore {
         Ok(Self { file })
     }
 
-    // Appends an edge record at the end of the file.
+    /// Appends an edge record at the end of the file.
     pub fn append(&mut self, record: EdgeRecord) -> Result<(), DbError> {
         let buf = record.to_bytes();
 
@@ -41,7 +41,7 @@ impl EdgeStore {
         Ok(())
     }
 
-    // Reads an edge record by zero-based record index.
+    /// Reads an edge record by its zero-based record index.
     pub fn read(&mut self, idx: u64) -> Result<EdgeRecord, DbError> {
         let offset = idx * EdgeRecord::SIZE as u64;
 
@@ -57,7 +57,7 @@ impl EdgeStore {
         Ok(EdgeRecord::from_bytes(buf))
     }
 
-    // Updates an edge record at the given zero-based record index.
+    /// Updates (overwrites) an edge record at the given zero-based index.
     pub fn update(&mut self, idx: u64, record: EdgeRecord) -> Result<(), DbError> {
         let offset = idx * EdgeRecord::SIZE as u64;
 
@@ -74,6 +74,7 @@ impl EdgeStore {
         Ok(())
     }
 
+    /// Returns the total number of edge records in the file.
     pub fn count(&mut self) -> Result<u64, DbError> {
         let len = self
             .file

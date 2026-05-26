@@ -22,6 +22,7 @@ pub struct DbHeader {
 impl DbHeader {
     pub const SIZE: usize = 52;
 
+    /// Creates a new `DbHeader` with default (zero) counts and the current magic/version.
     pub fn new() -> Self {
         Self {
             magic: HIVE_MAGIC,
@@ -34,6 +35,7 @@ impl DbHeader {
         }
     }
 
+    /// Serializes the header into its 52-byte little-endian representation.
     pub fn to_bytes(self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         buf[0..8].copy_from_slice(&self.magic);
@@ -46,6 +48,7 @@ impl DbHeader {
         buf
     }
 
+    /// Deserializes a header from its 52-byte little-endian representation.
     pub fn from_bytes(buf: [u8; Self::SIZE]) -> Self {
         Self {
             magic: buf[0..8].try_into().unwrap(),
@@ -59,6 +62,8 @@ impl DbHeader {
     }
 }
 
+/// Reads and validates the database header from the given meta file.
+/// Returns an error if the file is too small or the magic bytes don't match.
 pub fn read_header(path: &Path) -> Result<DbHeader, DbError> {
     let mut file = OpenOptions::new()
         .read(true)
@@ -87,6 +92,7 @@ pub fn read_header(path: &Path) -> Result<DbHeader, DbError> {
     Ok(header)
 }
 
+/// Writes a `DbHeader` to the given meta file, creating it if necessary.
 pub fn write_header(path: &Path, header: DbHeader) -> Result<(), DbError> {
     let mut file = OpenOptions::new()
         .create(true)

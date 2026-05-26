@@ -1,6 +1,6 @@
-// Core library entry point for Hive storage primitives.
 pub mod db;
 pub mod errors;
+pub mod query;
 pub mod store;
 #[cfg(test)]
 mod tests;

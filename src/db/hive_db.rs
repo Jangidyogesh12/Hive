@@ -62,10 +62,14 @@ pub struct Edge {
 }
 
 impl HiveDb {
+    /// Ensures the database directory exists, creating it recursively if necessary.
     fn ensure_db_dir(path: &Path) -> Result<(), Error> {
         return fs::create_dir_all(path);
     }
 
+    /// Opens (or creates) a Hive database at the given directory path.
+    /// Initialises all store files, label store, free lists, and validates
+    /// or writes the database header.
     pub fn open(path: &Path) -> Result<Self, DbError> {
         Self::ensure_db_dir(path)?;
 
@@ -112,14 +116,29 @@ impl HiveDb {
         })
     }
 
+    /// Writes the current in-memory header to the meta file.
     fn flush_header(&mut self) -> Result<(), DbError> {
         header::write_header(&self.meta_path, self.header)
     }
 
+    /// Closes the database, writing the final header state to disk.
     pub fn close(self) {
         let _ = header::write_header(&self.meta_path, self.header);
     }
 
+    /// Returns the total number of node records (including deleted) in the store.
+    pub fn node_count(&mut self) -> Result<u64, DbError> {
+        self.node_store.count()
+    }
+
+    /// Returns the total number of edge records (including deleted) in the store.
+    pub fn edge_count(&mut self) -> Result<u64, DbError> {
+        self.edge_store.count()
+    }
+
+    /// Creates a new node with the given label and property list.
+    /// Reuses a freed node ID from the free list when available.
+    /// Returns the new node's ID.
     pub fn create_node(&mut self, label: &str, props: Vec<Property>) -> Result<NodeId, DbError> {
         let prop_count = props.len() as u64;
         let label_id = self.label_store.get_or_create(label)?;
@@ -167,6 +186,10 @@ impl HiveDb {
         Ok(node_id)
     }
 
+    /// Creates a new edge from `src` to `dst` with the given label and property list.
+    /// Links the edge into both the source node's out-edge chain and the
+    /// destination node's in-edge chain. Reuses a freed edge ID when available.
+    /// Returns the new edge's ID.
     pub fn create_edge(
         &mut self,
         src: u64,
@@ -235,6 +258,8 @@ impl HiveDb {
         Ok(edge_id)
     }
 
+    /// Reads a node by ID, resolving its label string and walking its property chain
+    /// to collect all properties.
     pub fn get_node(&mut self, node_id: NodeId) -> Result<Node, DbError> {
         let record = self.node_store.read(node_id)?;
 
@@ -269,6 +294,8 @@ impl HiveDb {
         })
     }
 
+    /// Reads an edge by ID, resolving its label string and walking its property chain
+    /// to collect all properties.
     pub fn get_edge(&mut self, edge_id: u64) -> Result<Edge, DbError> {
         let record = self.edge_store.read(edge_id)?;
 
@@ -307,6 +334,8 @@ impl HiveDb {
         })
     }
 
+    /// Sets (or updates) a property on a node by key name.
+    /// Long string values are stored externally in the string store.
     pub fn set_node_property(
         &mut self,
         node_id: NodeId,
@@ -371,6 +400,8 @@ impl HiveDb {
         Ok(())
     }
 
+    /// Retrieves a property value from a node by key name.
+    /// Returns `Ok(None)` if the property is not found.
     pub fn get_node_property(
         &mut self,
         node_id: NodeId,
@@ -396,6 +427,8 @@ impl HiveDb {
         Ok(None)
     }
 
+    /// Sets (or updates) a property on an edge by key name.
+    /// Long string values are stored externally in the string store.
     pub fn set_edge_property(
         &mut self,
         edge_id: EdgeId,
@@ -460,6 +493,8 @@ impl HiveDb {
         Ok(())
     }
 
+    /// Retrieves a property value from an edge by key name.
+    /// Returns `Ok(None)` if the property is not found.
     pub fn get_edge_property(
         &mut self,
         edge_id: EdgeId,
@@ -485,6 +520,8 @@ impl HiveDb {
         Ok(None)
     }
 
+    /// Marks a node as deleted (sets the DELETED flag) and adds its ID to the free list.
+    /// Idempotent: if the node is already deleted, counts are not decremented again.
     pub fn delete_node(&mut self, id: u64) -> Result<u64, DbError> {
         let mut record = self.node_store.read(id)?;
         let was_deleted = (record.flags & DELETED) != 0;
@@ -498,6 +535,8 @@ impl HiveDb {
         }
         Ok(id)
     }
+    /// Marks an edge as deleted, unlinks it from source and destination node chains,
+    /// and adds its ID to the free list. Idempotent on already-deleted edges.
     pub fn delete_edge(&mut self, id: u64) -> Result<u64, DbError> {
         let mut record = self.edge_store.read(id)?;
         let was_deleted = (record.flags & DELETED) != 0;
@@ -551,6 +590,8 @@ impl HiveDb {
         Ok(id)
     }
 
+    /// Returns all non-deleted destination node IDs reachable via outgoing edges
+    /// from the given node.
     pub fn get_out_neighbors(&mut self, id: NodeId) -> Result<Vec<NodeId>, DbError> {
         let mut neighbors: Vec<NodeId> = Vec::new();
 
@@ -572,6 +613,8 @@ impl HiveDb {
         Ok(neighbors)
     }
 
+    /// Returns all non-deleted source node IDs reachable via incoming edges
+    /// to the given node.
     pub fn get_in_neighbors(&mut self, id: NodeId) -> Result<Vec<NodeId>, DbError> {
         let mut neighbors: Vec<NodeId> = Vec::new();
 
