@@ -61,6 +61,47 @@ fn end_to_end_create_and_match_with_traversal() {
 }
 
 #[test]
+fn end_to_end_variable_hops_traversal() {
+    let dir = temp_dir("query_variable_hops");
+    let mut db = HiveDb::open(&dir).unwrap();
+
+    parse_and_exec("CREATE (n:Person {name: \"Alice\"})", &mut db);
+    parse_and_exec("CREATE (n:Person {name: \"Raj\"})", &mut db);
+    parse_and_exec("CREATE (n:Person {name: \"Ram\"})", &mut db);
+    parse_and_exec("CREATE (n:Person {name: \"Riya\"})", &mut db);
+
+    let alice = match_first_node("Alice", &mut db);
+    let raj = match_first_node("Raj", &mut db);
+    let ram = match_first_node("Ram", &mut db);
+    let riya = match_first_node("Riya", &mut db);
+
+    db.create_edge(alice, raj, "KNOWS", vec![]).unwrap();
+    db.create_edge(raj, ram, "KNOWS", vec![]).unwrap();
+    db.create_edge(ram, riya, "KNOWS", vec![]).unwrap();
+    db.create_edge(ram, alice, "KNOWS", vec![]).unwrap();
+
+    let stmt = parse("MATCH (n:Person {name: \"Alice\"})-[:KNOWS*1..3]->(m:Person) RETURN m.name").unwrap();
+    let query_plan = plan(stmt).unwrap();
+    let mut executor = Executor::new(&mut db);
+    let result = executor.execute(query_plan).unwrap();
+
+    let mut names: Vec<String> = result
+        .rows
+        .iter()
+        .map(|row| match &row[0] {
+            Value::String(s) => s.clone(),
+            other => panic!("Expected string name, got {:?}", other),
+        })
+        .collect();
+    names.sort();
+
+    assert_eq!(names, vec!["Raj".to_string(), "Ram".to_string(), "Riya".to_string()]);
+
+    db.close();
+    cleanup_dir(&dir);
+}
+
+#[test]
 fn end_to_end_set_and_delete_require_bound_variables() {
     let dir = temp_dir("query_set_delete_err");
     let mut db = HiveDb::open(&dir).unwrap();

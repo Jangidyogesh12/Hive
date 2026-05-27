@@ -39,10 +39,28 @@ fn parse_match_relationship_incoming_direction() {
                     assert_eq!(rel.variable, Some("r".to_string()));
                     assert_eq!(rel.rel_type, Some("KNOWS".to_string()));
                     assert_eq!(rel.direction, Direction::Incoming);
+                    assert_eq!(rel.hops, None);
                 }
                 _ => panic!("expected edge pattern"),
             }
         }
+        _ => panic!("expected MATCH statement"),
+    }
+}
+
+#[test]
+fn parse_match_relationship_variable_hops() {
+    let stmt = parse("MATCH (n:Person)-[:KNOWS*1..3]->(m:Person) RETURN n, m").unwrap();
+
+    match stmt {
+        Statement::Match(clause) => match &clause.pattern {
+            Pattern::Edge(_, rel, _) => {
+                let hops = rel.hops.as_ref().expect("expected hops range");
+                assert_eq!(hops.min_hops, Some(1));
+                assert_eq!(hops.max_hops, Some(3));
+            }
+            _ => panic!("expected edge pattern"),
+        },
         _ => panic!("expected MATCH statement"),
     }
 }

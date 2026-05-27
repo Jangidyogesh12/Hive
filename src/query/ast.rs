@@ -40,6 +40,7 @@ pub struct RelationshipPattern {
     pub variable: Option<String>,
     pub rel_type: Option<String>,
     pub direction: Direction,
+    pub hops: Option<RelationshipLength>,
     pub properties: HashMap<String, Expression>,
 }
 
@@ -103,4 +104,10 @@ pub enum BinaryOp {
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOp {
     Not,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelationshipLength {
+    pub min_hops: Option<u32>,
+    pub max_hops: Option<u32>,
 }

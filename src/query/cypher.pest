@@ -22,7 +22,11 @@ right_arrow_rel = { "-" ~ "[" ~ rel_detail ~ "]" ~ "->" }
 
 undirected_rel = { "-" ~ "[" ~ rel_detail ~ "]" ~ "-" }
 
-rel_detail = { variable? ~ (":" ~ identifier)? ~ property_map? }
+rel_detail = { variable? ~ (":" ~ identifier)? ~ rel_length? ~ property_map? }
+
+rel_length = { "*" ~ (length_range | integer)? }
+
+length_range = {integer? ~ ".." ~ integer?}
 
 property_map = { "{" ~ property_pair ~ ("," ~ property_pair)* ~ "}" }
 

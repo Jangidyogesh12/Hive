@@ -1,8 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::db::hive_db::{HiveDb, Property};
 use crate::errors::DbError;
-use crate::query::ast::{BinaryOp, Direction, Expression, NodePattern, ReturnItem, UnaryOp};
+use crate::query::ast::{
+    BinaryOp, Direction, Expression, NodePattern, RelationshipLength, ReturnItem, UnaryOp,
+};
 use crate::query::planner::QueryPlan;
 use crate::query::types::QueryResult;
 use crate::query::utils::expression_to_literal;
@@ -168,11 +170,12 @@ impl<'a> Executor<'a> {
                 direction,
                 to_var,
                 to_label,
+                hops,
             } => {
                 let mut new_rows = Vec::new();
                 for row in rows {
                     let traversed = self.traverse_edges(
-                        row, &from_var, &edge_type, &direction, &to_var, &to_label,
+                        row, &from_var, &edge_type, &direction, &to_var, &to_label, &hops,
                     )?;
                     new_rows.extend(traversed);
                 }
@@ -278,79 +281,117 @@ impl<'a> Executor<'a> {
         direction: &Direction,
         to_var: &str,
         to_label: &Option<String>,
+        hops: &Option<RelationshipLength>,
     ) -> Result<Vec<Row>, DbError> {
         let from_id = match row.get(from_var) {
             Some(&id) => id,
             None => return Ok(vec![]),
         };
 
-        let node = self.db.get_node(from_id)?;
+        let (min_hops, max_hops) = match hops {
+            Some(h) => (h.min_hops.unwrap_or(1), h.max_hops.unwrap_or(1)),
+            None => (1, 1),
+        };
+
+        if min_hops > max_hops {
+            return Ok(vec![]);
+        }
+
         let mut results = Vec::new();
 
-        match direction {
-            Direction::Outgoing => {
-                self.walk_edges(
-                    row,
-                    node.first_out_edge,
-                    from_id,
-                    false,
-                    edge_type,
-                    to_var,
-                    to_label,
-                    &mut results,
-                )?;
+        let mut queue: VecDeque<(u64, u32)> = VecDeque::new();
+        let mut visited: HashSet<u64> = HashSet::new();
+
+        queue.push_back((from_id, 0));
+        visited.insert(from_id);
+
+        while let Some((current_id, depth)) = queue.pop_front() {
+            if depth >= max_hops {
+                continue;
             }
-            Direction::Incoming => {
-                self.walk_edges(
-                    row,
-                    node.first_in_edge,
-                    from_id,
-                    true,
-                    edge_type,
-                    to_var,
-                    to_label,
-                    &mut results,
-                )?;
-            }
-            Direction::Undirected => {
-                self.walk_edges(
-                    row,
-                    node.first_out_edge,
-                    from_id,
-                    false,
-                    edge_type,
-                    to_var,
-                    to_label,
-                    &mut results,
-                )?;
-                self.walk_edges(
-                    row,
-                    node.first_in_edge,
-                    from_id,
-                    true,
-                    edge_type,
-                    to_var,
-                    to_label,
-                    &mut results,
-                )?;
+
+            let next_depth = depth + 1;
+            let neighbors = self.collect_neighbors(current_id, edge_type, direction, to_label)?;
+
+            for neighbor_id in neighbors {
+                if visited.insert(neighbor_id) {
+                    if next_depth >= min_hops && next_depth <= max_hops {
+                        let mut new_row = row.clone();
+                        new_row.insert(to_var.to_string(), neighbor_id);
+                        results.push(new_row);
+                    }
+                    queue.push_back((neighbor_id, next_depth));
+                }
             }
         }
 
         Ok(results)
     }
 
+    fn collect_neighbors(
+        &mut self,
+        from_id: u64,
+        edge_type: &Option<String>,
+        direction: &Direction,
+        to_label: &Option<String>,
+    ) -> Result<Vec<u64>, DbError> {
+        let node = self.db.get_node(from_id)?;
+        let mut neighbors = Vec::new();
+
+        match direction {
+            Direction::Outgoing => {
+                self.walk_edges(
+                    node.first_out_edge,
+                    from_id,
+                    false,
+                    edge_type,
+                    to_label,
+                    &mut neighbors,
+                )?;
+            }
+            Direction::Incoming => {
+                self.walk_edges(
+                    node.first_in_edge,
+                    from_id,
+                    true,
+                    edge_type,
+                    to_label,
+                    &mut neighbors,
+                )?;
+            }
+            Direction::Undirected => {
+                self.walk_edges(
+                    node.first_out_edge,
+                    from_id,
+                    false,
+                    edge_type,
+                    to_label,
+                    &mut neighbors,
+                )?;
+                self.walk_edges(
+                    node.first_in_edge,
+                    from_id,
+                    true,
+                    edge_type,
+                    to_label,
+                    &mut neighbors,
+                )?;
+            }
+        }
+
+        Ok(neighbors)
+    }
+
     /// Walks a linked list of edges from `first_edge`, collecting neighbours
     /// that match the edge type and target label filters, skipping deleted edges.
     fn walk_edges(
         &mut self,
-        row: &Row,
         first_edge: u64,
         from_id: u64,
         incoming: bool,
         edge_type: &Option<String>,
-        to_var: &str,
         to_label: &Option<String>,
-        results: &mut Vec<Row>,
+        neighbors: &mut Vec<u64>,
     ) -> Result<(), DbError> {
         let mut edge_id = first_edge;
 
@@ -392,9 +433,7 @@ impl<'a> Executor<'a> {
                 }
             }
 
-            let mut new_row = row.clone();
-            new_row.insert(to_var.to_string(), neighbor_id);
-            results.push(new_row);
+            neighbors.push(neighbor_id);
 
             edge_id = next_id;
         }

@@ -4,8 +4,8 @@ use pest::Parser;
 use pest_derive::Parser;
 
 use crate::query::ast::{
-    BinaryOp, Direction, Expression, MatchClause, NodePattern, Pattern, RelationshipPattern,
-    ReturnClause, ReturnItem, SetClause, Statement, WhereClause,
+    BinaryOp, Direction, Expression, MatchClause, NodePattern, Pattern, RelationshipLength,
+    RelationshipPattern, ReturnClause, ReturnItem, SetClause, Statement, WhereClause,
 };
 
 #[derive(Parser)]
@@ -180,6 +180,7 @@ fn build_relationship_pattern(
     let mut variable = None;
     let mut rel_type = None;
     let mut properties = HashMap::new();
+    let mut hops = None;
 
     for p in detail_inner {
         match p.as_rule() {
@@ -192,6 +193,9 @@ fn build_relationship_pattern(
             Rule::property_map => {
                 properties = build_property_map(p)?;
             }
+            Rule::rel_length => {
+                hops = Some(get_hops_range(p)?);
+            }
             _ => {}
         }
     }
@@ -200,10 +204,63 @@ fn build_relationship_pattern(
         variable,
         rel_type,
         direction,
+        hops,
         properties,
     })
 }
 
+fn get_hops_range(pair: pest::iterators::Pair<Rule>) -> Result<RelationshipLength, String> {
+    let spec = pair
+        .as_str()
+        .strip_prefix('*')
+        .ok_or("Invalid relationship length")?;
+
+    if spec.is_empty() {
+        return Ok(RelationshipLength {
+            min_hops: None,
+            max_hops: None,
+        });
+    }
+
+    if let Some((min_s, max_s)) = spec.split_once("..") {
+        let min_hops = if min_s.is_empty() {
+            None
+        } else {
+            Some(
+                min_s
+                    .parse::<u32>()
+                    .map_err(|e| format!("Invalid min hops: {e}"))?,
+            )
+        };
+
+        let max_hops = if max_s.is_empty() {
+            None
+        } else {
+            Some(
+                max_s
+                    .parse::<u32>()
+                    .map_err(|e| format!("Invalid max hops: {e}"))?,
+            )
+        };
+
+        if let (Some(min), Some(max)) = (min_hops, max_hops) {
+            if min > max {
+                return Err("Invalid relationship range: min cannot exceed max".to_string());
+            }
+        }
+
+        return Ok(RelationshipLength { min_hops, max_hops });
+    }
+
+    let exact = spec
+        .parse::<u32>()
+        .map_err(|e| format!("Invalid hop count: {e}"))?;
+
+    Ok(RelationshipLength {
+        min_hops: Some(exact),
+        max_hops: Some(exact),
+    })
+}
 /// Builds a `HashMap<String, Expression>` from a `property_map` pair.
 fn build_property_map(
     pair: pest::iterators::Pair<Rule>,

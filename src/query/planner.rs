@@ -1,7 +1,7 @@
 use crate::errors::DbError;
 use crate::query::ast::{
-    BinaryOp, Direction, Expression, MatchClause, NodePattern, Pattern, ReturnItem, SetClause,
-    Statement,
+    BinaryOp, Direction, Expression, MatchClause, NodePattern, Pattern, RelationshipLength,
+    ReturnItem, SetClause, Statement,
 };
 use crate::query::utils::expression_to_literal;
 use crate::value::Value;
@@ -28,6 +28,7 @@ pub enum QueryPlan {
         direction: Direction,
         to_var: String,
         to_label: Option<String>,
+        hops: Option<RelationshipLength>,
     },
     Filter {
         condition: Expression,
@@ -142,6 +143,7 @@ fn plan_match(clause: MatchClause) -> Result<QueryPlan, DbError> {
                 direction: rel.direction.clone(),
                 to_var: second.variable.clone().unwrap(),
                 to_label: second.label.clone(),
+                hops: rel.hops.clone(),
             });
 
             let mut second_filter = Vec::new();
@@ -191,8 +193,6 @@ fn plan_set(clause: SetClause) -> Result<QueryPlan, DbError> {
         value,
     })
 }
-
-
 
 /// Merges inline property equality conditions with an optional WHERE clause
 /// into a single AND-chained expression, if any conditions exist.
