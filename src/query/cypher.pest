@@ -42,11 +42,15 @@ expression = { or_expr }
 
 or_expr = { and_expr ~ ("OR" ~ and_expr)* }
 
-and_expr = { comparison ~ ("AND" ~ comparison)* }
+and_expr = { not_expr ~ ("AND" ~ not_expr)* }
+
+not_expr = { (not* ~ comparison) }
+
+not  = {"NOT"}
 
 comparison = { atom ~ (operator ~ atom)? }
 
-operator = { "=" | "<>" | ">" | ">=" | "<" | "<=" }
+operator = { ">=" | "<=" | "<>" | "=" | ">" | "<" }
 
 atom = _{ boolean | float | integer | string | property_access | variable | paren_expr }
 

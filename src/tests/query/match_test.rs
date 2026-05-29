@@ -1,5 +1,5 @@
 use crate::query::{
-    ast::{BinaryOp, Direction, Expression, Pattern, Statement},
+    ast::{BinaryOp, Direction, Expression, Pattern, Statement, UnaryOp},
     parser::parse,
 };
 
@@ -75,6 +75,68 @@ fn parse_match_where_boolean_expression_tree() {
             match where_clause.condition {
                 Expression::BinaryOp { op: BinaryOp::Or, .. } => {}
                 _ => panic!("expected OR at top level"),
+            }
+        }
+        _ => panic!("expected MATCH statement"),
+    }
+}
+
+#[test]
+fn parse_match_relationship_undirected_direction() {
+    let stmt = parse("MATCH (n:Person)-[r:KNOWS]-(m:Person) RETURN n, m").unwrap();
+
+    match stmt {
+        Statement::Match(clause) => {
+            assert_eq!(clause.return_clause.items.len(), 2);
+            match &clause.pattern {
+                Pattern::Edge(_, rel, _) => {
+                    assert_eq!(rel.variable, Some("r".to_string()));
+                    assert_eq!(rel.rel_type, Some("KNOWS".to_string()));
+                    assert_eq!(rel.direction, Direction::Undirected);
+                }
+                _ => panic!("expected edge pattern"),
+            }
+        }
+        _ => panic!("expected MATCH statement"),
+    }
+}
+
+#[test]
+fn parse_match_where_not_expression_tree() {
+    let stmt = parse("MATCH (n:Person) WHERE NOT n.age >= 25 RETURN n").unwrap();
+
+    match stmt {
+        Statement::Match(clause) => {
+            let where_clause = clause.where_clause.expect("where clause required");
+            match where_clause.condition {
+                Expression::UnaryOp {
+                    op: UnaryOp::Not, ..
+                } => {}
+                _ => panic!("expected NOT unary op at top level"),
+            }
+        }
+        _ => panic!("expected MATCH statement"),
+    }
+}
+
+#[test]
+fn parse_match_where_double_not_expression_tree() {
+    let stmt = parse("MATCH (n:Person) WHERE NOT NOT n.age >= 25 RETURN n").unwrap();
+
+    match stmt {
+        Statement::Match(clause) => {
+            let where_clause = clause.where_clause.expect("where clause required");
+            match where_clause.condition {
+                Expression::UnaryOp {
+                    op: UnaryOp::Not,
+                    expr,
+                } => match *expr {
+                    Expression::UnaryOp {
+                        op: UnaryOp::Not, ..
+                    } => {}
+                    _ => panic!("expected nested NOT unary op"),
+                },
+                _ => panic!("expected NOT unary op at top level"),
             }
         }
         _ => panic!("expected MATCH statement"),

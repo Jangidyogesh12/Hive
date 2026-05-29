@@ -129,6 +129,92 @@ fn end_to_end_set_and_delete_require_bound_variables() {
     cleanup_dir(&dir);
 }
 
+#[test]
+fn end_to_end_incoming_and_undirected_traversal() {
+    let dir = temp_dir("query_incoming_undirected");
+    let mut db = HiveDb::open(&dir).unwrap();
+
+    parse_and_exec("CREATE (n:Person {name: \"Alice\"})", &mut db);
+    parse_and_exec("CREATE (n:Person {name: \"Bob\"})", &mut db);
+    parse_and_exec("CREATE (n:Person {name: \"Cara\"})", &mut db);
+
+    let alice = match_first_node("Alice", &mut db);
+    let bob = match_first_node("Bob", &mut db);
+    let cara = match_first_node("Cara", &mut db);
+
+    db.create_edge(alice, bob, "KNOWS", vec![]).unwrap();
+    db.create_edge(cara, alice, "KNOWS", vec![]).unwrap();
+
+    let incoming_stmt = parse("MATCH (n:Person)<-[:KNOWS]-(m:Person) WHERE n.name = \"Alice\" RETURN m.name").unwrap();
+    let incoming_plan = plan(incoming_stmt).unwrap();
+    let mut executor = Executor::new(&mut db);
+    let incoming_result = executor.execute(incoming_plan).unwrap();
+
+    let mut incoming_names: Vec<String> = incoming_result
+        .rows
+        .iter()
+        .map(|row| match &row[0] {
+            Value::String(s) => s.clone(),
+            other => panic!("Expected string name, got {:?}", other),
+        })
+        .collect();
+    incoming_names.sort();
+    assert_eq!(incoming_names, vec!["Cara".to_string()]);
+
+    let undirected_stmt =
+        parse("MATCH (n:Person)-[:KNOWS]-(m:Person) WHERE n.name = \"Alice\" RETURN m.name")
+            .unwrap();
+    let undirected_plan = plan(undirected_stmt).unwrap();
+    let undirected_result = executor.execute(undirected_plan).unwrap();
+
+    let mut undirected_names: Vec<String> = undirected_result
+        .rows
+        .iter()
+        .map(|row| match &row[0] {
+            Value::String(s) => s.clone(),
+            other => panic!("Expected string name, got {:?}", other),
+        })
+        .collect();
+    undirected_names.sort();
+    assert_eq!(
+        undirected_names,
+        vec!["Bob".to_string(), "Cara".to_string()]
+    );
+
+    db.close();
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn end_to_end_compound_where_with_comparisons_and_not() {
+    let dir = temp_dir("query_compound_where");
+    let mut db = HiveDb::open(&dir).unwrap();
+
+    parse_and_exec("CREATE (n:Person {name: \"Alice\", age: 30})", &mut db);
+    parse_and_exec("CREATE (n:Person {name: \"Bob\", age: 35})", &mut db);
+    parse_and_exec("CREATE (n:Person {name: \"Cara\", age: 20})", &mut db);
+
+    let stmt = parse("MATCH (n:Person) WHERE n.age >= 30 AND n.age <= 35 AND n.name <> \"Cara\" AND NOT n.age < 30 RETURN n.name").unwrap();
+    let query_plan = plan(stmt).unwrap();
+    let mut executor = Executor::new(&mut db);
+    let result = executor.execute(query_plan).unwrap();
+
+    let mut names: Vec<String> = result
+        .rows
+        .iter()
+        .map(|row| match &row[0] {
+            Value::String(s) => s.clone(),
+            other => panic!("Expected string name, got {:?}", other),
+        })
+        .collect();
+    names.sort();
+
+    assert_eq!(names, vec!["Alice".to_string(), "Bob".to_string()]);
+
+    db.close();
+    cleanup_dir(&dir);
+}
+
 fn parse_and_exec(input: &str, db: &mut HiveDb) {
     let stmt = parse(input).unwrap();
     let query_plan = plan(stmt).unwrap();

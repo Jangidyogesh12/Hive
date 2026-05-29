@@ -319,6 +319,29 @@ fn build_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Str
                 })
             })
         }
+        Rule::not_expr => {
+            let mut not_count = 0usize;
+            let mut base_expr: Option<Expression> = None;
+
+            for p in pair.into_inner() {
+                if p.as_str() == "NOT" {
+                    not_count += 1;
+                } else {
+                    base_expr = Some(build_expression(p)?);
+                }
+            }
+
+            let mut expr = base_expr.ok_or("Expected expression after NOT")?;
+
+            for _ in 0..not_count {
+                expr = Expression::UnaryOp {
+                    op: crate::query::ast::UnaryOp::Not,
+                    expr: Box::new(expr),
+                };
+            }
+
+            Ok(expr)
+        }
         Rule::comparison => {
             let mut inner = pair.into_inner();
             let left = build_expression(inner.next().unwrap())?;
@@ -377,6 +400,7 @@ fn build_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Str
             Ok(Expression::Property { variable, property })
         }
         Rule::variable => Ok(Expression::Variable(pair.as_str().to_string())),
+
         Rule::paren_expr => {
             let inner = pair.into_inner().next().ok_or("Expected expression")?;
             build_expression(inner)
