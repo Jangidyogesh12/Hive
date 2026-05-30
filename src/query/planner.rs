@@ -1,7 +1,7 @@
 use crate::errors::DbError;
 use crate::query::ast::{
-    BinaryOp, Direction, Expression, MatchClause, NodePattern, Pattern, RelationshipLength,
-    ReturnItem, SetClause, Statement,
+    BinaryOp, Direction, Expression, MatchClause, NodePattern, PathPattern, Pattern,
+    RelationshipLength, ReturnItem, SetClause, Statement,
 };
 use crate::query::utils::expression_to_literal;
 use crate::value::Value;
@@ -61,7 +61,15 @@ pub fn plan(stmt: Statement) -> Result<QueryPlan, DbError> {
 fn plan_create(input: Pattern) -> Result<QueryPlan, DbError> {
     match input {
         Pattern::Node(node) => Ok(QueryPlan::CreateNode { node }),
-        Pattern::Edge(left, rel, right) => {
+        Pattern::Path(PathPattern { start, segments }) => {
+            if segments.len() != 1 {
+                return Err(DbError::QueryError(
+                    "CREATE currently supports exactly one relationship segment".to_string(),
+                ));
+            }
+            let first = &segments[0];
+
+            let rel = first.relationship.clone();
             let rel_type = rel.rel_type.ok_or(DbError::QueryError(
                 "CREATE requires a label (e.g., CREATE (n:Person {...}))".to_string(),
             ))?;
@@ -74,8 +82,8 @@ fn plan_create(input: Pattern) -> Result<QueryPlan, DbError> {
             }
 
             Ok(QueryPlan::CreateRelationship {
-                src: *left,
-                dst: *right,
+                src: start,
+                dst: first.node.clone(),
                 rel_type,
                 properties,
             })
@@ -114,12 +122,12 @@ fn plan_match(clause: MatchClause) -> Result<QueryPlan, DbError> {
                 filter: combined_filter,
             });
         }
-        Pattern::Edge(ref first, ref rel, ref second) => {
+        Pattern::Path(PathPattern { start, segments }) => {
             let mut first_filter = Vec::new();
-            for (key, value_expr) in &first.properties {
+            for (key, value_expr) in &start.properties {
                 first_filter.push(Expression::BinaryOp {
                     left: Box::new(Expression::Property {
-                        variable: first.variable.clone().unwrap(),
+                        variable: start.variable.clone().unwrap(),
                         property: key.clone(),
                     }),
                     op: BinaryOp::Eq,
@@ -128,8 +136,8 @@ fn plan_match(clause: MatchClause) -> Result<QueryPlan, DbError> {
             }
 
             steps.push(QueryPlan::ScanNodes {
-                variable: first.variable.clone().unwrap(),
-                label: first.label.clone(),
+                variable: start.variable.clone().unwrap(),
+                label: start.label.clone(),
                 filter: if first_filter.is_empty() {
                     None
                 } else {
@@ -137,32 +145,41 @@ fn plan_match(clause: MatchClause) -> Result<QueryPlan, DbError> {
                 },
             });
 
-            steps.push(QueryPlan::TraverseEdges {
-                from_var: first.variable.clone().unwrap(),
-                edge_type: rel.rel_type.clone(),
-                direction: rel.direction.clone(),
-                to_var: second.variable.clone().unwrap(),
-                to_label: second.label.clone(),
-                hops: rel.hops.clone(),
-            });
+            let mut from_var = start.variable.clone().unwrap();
 
-            let mut second_filter = Vec::new();
-            for (key, value_expr) in &second.properties {
-                second_filter.push(Expression::BinaryOp {
-                    left: Box::new(Expression::Property {
-                        variable: second.variable.clone().unwrap(),
-                        property: key.clone(),
-                    }),
-                    op: BinaryOp::Eq,
-                    right: Box::new(value_expr.clone()),
-                });
-            }
+            for seg in &segments {
+                let to_variable = seg.node.variable.clone().unwrap();
 
-            if !second_filter.is_empty() {
-                steps.push(QueryPlan::Filter {
-                    condition: merge_conditions(second_filter, None)
-                        .ok_or(DbError::QueryError("Empty filter".to_string()))?,
+                steps.push(QueryPlan::TraverseEdges {
+                    from_var: from_var.clone(),
+                    edge_type: seg.relationship.rel_type.clone(),
+                    direction: seg.relationship.direction.clone(),
+                    to_var: to_variable.clone(),
+                    to_label: seg.node.label.clone(),
+                    hops: seg.relationship.hops.clone(),
                 });
+
+                let mut node_filter = Vec::new();
+
+                for (key, value_expr) in &seg.node.properties {
+                    node_filter.push(Expression::BinaryOp {
+                        left: Box::new(Expression::Property {
+                            variable: to_variable.clone(),
+                            property: key.clone(),
+                        }),
+                        op: BinaryOp::Eq,
+                        right: Box::new(value_expr.clone()),
+                    });
+                }
+
+                if !node_filter.is_empty() {
+                    steps.push(QueryPlan::Filter {
+                        condition: merge_conditions(node_filter, None)
+                            .ok_or(DbError::QueryError("Empty filter".to_string()))?,
+                    });
+                }
+
+                from_var = to_variable;
             }
 
             if let Some(where_clause) = clause.where_clause {

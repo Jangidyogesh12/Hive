@@ -25,7 +25,19 @@ pub struct SetClause {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     Node(NodePattern),
-    Edge(Box<NodePattern>, Box<RelationshipPattern>, Box<NodePattern>),
+    Path(PathPattern),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PathPattern {
+    pub start: NodePattern,
+    pub segments: Vec<PathSegment>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PathSegment {
+    pub relationship: RelationshipPattern,
+    pub node: NodePattern,
 }
 
 #[derive(Debug, Clone, PartialEq)]

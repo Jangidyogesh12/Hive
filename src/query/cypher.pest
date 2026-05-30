@@ -10,7 +10,7 @@ set_stmt = { "SET" ~ set_item }
 
 set_item = { variable ~ "." ~ identifier ~ "=" ~ expression }
 
-pattern = { node_pattern ~ (rel_pattern ~ node_pattern)? }
+pattern = { node_pattern ~ (rel_pattern ~ node_pattern)* }
 
 node_pattern = { "(" ~ variable ~ (":" ~ identifier)? ~ property_map? ~ ")" }
 

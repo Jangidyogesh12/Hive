@@ -215,6 +215,38 @@ fn end_to_end_compound_where_with_comparisons_and_not() {
     cleanup_dir(&dir);
 }
 
+#[test]
+fn end_to_end_complex_match_chained_relationships() {
+    let dir = temp_dir("query_complex_match_chain");
+    let mut db = HiveDb::open(&dir).unwrap();
+
+    parse_and_exec("CREATE (n:Person {name: \"Alice\"})", &mut db);
+    parse_and_exec("CREATE (n:Person {name: \"Bob\"})", &mut db);
+    parse_and_exec("CREATE (n:Company {name: \"Acme\"})", &mut db);
+
+    let alice = match_first_node("Alice", &mut db);
+    let bob = match_first_node("Bob", &mut db);
+    let acme = match_first_company("Acme", &mut db);
+
+    db.create_edge(alice, bob, "KNOWS", vec![]).unwrap();
+    db.create_edge(bob, acme, "WORKS_AT", vec![]).unwrap();
+
+    let stmt =
+        parse("MATCH (a:Person)-[:KNOWS]->(b:Person)-[:WORKS_AT]->(c:Company) RETURN a.name, b.name, c.name")
+            .unwrap();
+    let query_plan = plan(stmt).unwrap();
+    let mut executor = Executor::new(&mut db);
+    let result = executor.execute(query_plan).unwrap();
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0][0], Value::String("Alice".to_string()));
+    assert_eq!(result.rows[0][1], Value::String("Bob".to_string()));
+    assert_eq!(result.rows[0][2], Value::String("Acme".to_string()));
+
+    db.close();
+    cleanup_dir(&dir);
+}
+
 fn parse_and_exec(input: &str, db: &mut HiveDb) {
     let stmt = parse(input).unwrap();
     let query_plan = plan(stmt).unwrap();
@@ -225,6 +257,22 @@ fn parse_and_exec(input: &str, db: &mut HiveDb) {
 fn match_first_node(name: &str, db: &mut HiveDb) -> u64 {
     let query = format!(
         "MATCH (n:Person) WHERE n.name = \"{}\" RETURN n",
+        name
+    );
+    let stmt = parse(&query).unwrap();
+    let query_plan = plan(stmt).unwrap();
+    let mut executor = Executor::new(db);
+    let result = executor.execute(query_plan).unwrap();
+    if let crate::value::Value::Integer(id) = result.rows[0][0] {
+        id as u64
+    } else {
+        panic!("Expected integer node ID");
+    }
+}
+
+fn match_first_company(name: &str, db: &mut HiveDb) -> u64 {
+    let query = format!(
+        "MATCH (n:Company) WHERE n.name = \"{}\" RETURN n",
         name
     );
     let stmt = parse(&query).unwrap();

@@ -35,7 +35,9 @@ fn parse_match_relationship_incoming_direction() {
         Statement::Match(clause) => {
             assert_eq!(clause.return_clause.items.len(), 2);
             match &clause.pattern {
-                Pattern::Edge(_, rel, _) => {
+                Pattern::Path(path) => {
+                    assert_eq!(path.segments.len(), 1);
+                    let rel = &path.segments[0].relationship;
                     assert_eq!(rel.variable, Some("r".to_string()));
                     assert_eq!(rel.rel_type, Some("KNOWS".to_string()));
                     assert_eq!(rel.direction, Direction::Incoming);
@@ -54,7 +56,9 @@ fn parse_match_relationship_variable_hops() {
 
     match stmt {
         Statement::Match(clause) => match &clause.pattern {
-            Pattern::Edge(_, rel, _) => {
+            Pattern::Path(path) => {
+                assert_eq!(path.segments.len(), 1);
+                let rel = &path.segments[0].relationship;
                 let hops = rel.hops.as_ref().expect("expected hops range");
                 assert_eq!(hops.min_hops, Some(1));
                 assert_eq!(hops.max_hops, Some(3));
@@ -89,7 +93,9 @@ fn parse_match_relationship_undirected_direction() {
         Statement::Match(clause) => {
             assert_eq!(clause.return_clause.items.len(), 2);
             match &clause.pattern {
-                Pattern::Edge(_, rel, _) => {
+                Pattern::Path(path) => {
+                    assert_eq!(path.segments.len(), 1);
+                    let rel = &path.segments[0].relationship;
                     assert_eq!(rel.variable, Some("r".to_string()));
                     assert_eq!(rel.rel_type, Some("KNOWS".to_string()));
                     assert_eq!(rel.direction, Direction::Undirected);
@@ -97,6 +103,34 @@ fn parse_match_relationship_undirected_direction() {
                 _ => panic!("expected edge pattern"),
             }
         }
+        _ => panic!("expected MATCH statement"),
+    }
+}
+
+#[test]
+fn parse_match_complex_path_pattern() {
+    let stmt = parse("MATCH (a)-[:KNOWS]->(b)-[:WORKS_AT]->(c) RETURN a, b, c").unwrap();
+
+    match stmt {
+        Statement::Match(clause) => match &clause.pattern {
+            Pattern::Path(path) => {
+                assert_eq!(path.start.variable, Some("a".to_string()));
+                assert_eq!(path.segments.len(), 2);
+
+                assert_eq!(
+                    path.segments[0].relationship.rel_type,
+                    Some("KNOWS".to_string())
+                );
+                assert_eq!(path.segments[0].node.variable, Some("b".to_string()));
+
+                assert_eq!(
+                    path.segments[1].relationship.rel_type,
+                    Some("WORKS_AT".to_string())
+                );
+                assert_eq!(path.segments[1].node.variable, Some("c".to_string()));
+            }
+            _ => panic!("expected path pattern"),
+        },
         _ => panic!("expected MATCH statement"),
     }
 }

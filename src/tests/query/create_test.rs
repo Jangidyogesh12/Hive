@@ -28,19 +28,31 @@ fn parse_create_relationship_with_variable_type_direction_and_props() {
     .unwrap();
 
     match stmt {
-        Statement::Create(Pattern::Edge(left, rel, right)) => {
-            assert_eq!(left.variable, Some("a".to_string()));
-            assert_eq!(left.label, Some("Person".to_string()));
-            assert_eq!(left.properties.get("name"), Some(&Expression::String("Alice".to_string())));
+        Statement::Create(Pattern::Path(path)) => {
+            assert_eq!(path.start.variable, Some("a".to_string()));
+            assert_eq!(path.start.label, Some("Person".to_string()));
+            assert_eq!(
+                path.start.properties.get("name"),
+                Some(&Expression::String("Alice".to_string()))
+            );
 
-            assert_eq!(rel.variable, Some("r".to_string()));
-            assert_eq!(rel.rel_type, Some("KNOWS".to_string()));
-            assert_eq!(rel.direction, Direction::Outgoing);
-            assert_eq!(rel.properties.get("since"), Some(&Expression::Integer(2024)));
+            assert_eq!(path.segments.len(), 1);
+            let segment = &path.segments[0];
 
-            assert_eq!(right.variable, Some("b".to_string()));
-            assert_eq!(right.label, Some("Person".to_string()));
-            assert_eq!(right.properties.get("name"), Some(&Expression::String("Bob".to_string())));
+            assert_eq!(segment.relationship.variable, Some("r".to_string()));
+            assert_eq!(segment.relationship.rel_type, Some("KNOWS".to_string()));
+            assert_eq!(segment.relationship.direction, Direction::Outgoing);
+            assert_eq!(
+                segment.relationship.properties.get("since"),
+                Some(&Expression::Integer(2024))
+            );
+
+            assert_eq!(segment.node.variable, Some("b".to_string()));
+            assert_eq!(segment.node.label, Some("Person".to_string()));
+            assert_eq!(
+                segment.node.properties.get("name"),
+                Some(&Expression::String("Bob".to_string()))
+            );
         }
         _ => panic!("expected CREATE relationship pattern"),
     }

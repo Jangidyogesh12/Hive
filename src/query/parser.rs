@@ -4,8 +4,9 @@ use pest::Parser;
 use pest_derive::Parser;
 
 use crate::query::ast::{
-    BinaryOp, Direction, Expression, MatchClause, NodePattern, Pattern, RelationshipLength,
-    RelationshipPattern, ReturnClause, ReturnItem, SetClause, Statement, WhereClause,
+    BinaryOp, Direction, Expression, MatchClause, NodePattern, PathPattern, PathSegment, Pattern,
+    RelationshipLength, RelationshipPattern, ReturnClause, ReturnItem, SetClause, Statement,
+    WhereClause,
 };
 
 #[derive(Parser)]
@@ -102,19 +103,22 @@ fn build_pattern(pair: pest::iterators::Pair<Rule>) -> Result<Pattern, String> {
     let mut inner = pair.into_inner();
 
     let first_node = inner.next().ok_or("Expected node pattern")?;
-    let node = build_node_pattern(first_node)?;
+    let start = build_node_pattern(first_node)?;
 
-    if let Some(rel_pair) = inner.next() {
-        let rel = build_relationship_pattern(rel_pair)?;
-        let second_node = inner.next().ok_or("Expected second node pattern")?;
-        let second = build_node_pattern(second_node)?;
-        Ok(Pattern::Edge(
-            Box::new(node),
-            Box::new(rel),
-            Box::new(second),
-        ))
+    let mut segments = Vec::new();
+
+    while let Some(rel_pair) = inner.next() {
+        let relationship = build_relationship_pattern(rel_pair)?;
+        let node_pair = inner.next().ok_or("Expected second node pattern")?;
+        let node = build_node_pattern(node_pair)?;
+
+        segments.push(PathSegment { relationship, node });
+    }
+
+    if segments.is_empty() {
+        Ok(Pattern::Node(start))
     } else {
-        Ok(Pattern::Node(node))
+        Ok(Pattern::Path(PathPattern { start, segments }))
     }
 }
 
