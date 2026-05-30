@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::db::hive_db::{HiveDb, Node, Property};
+use crate::db::hive_db::{HiveDb, Property};
 use crate::errors::DbError;
 use crate::query::ast::{
     BinaryOp, Direction, Expression, NodePattern, RelationshipLength, ReturnItem, UnaryOp,
