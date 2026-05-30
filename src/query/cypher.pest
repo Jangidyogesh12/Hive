@@ -71,4 +71,5 @@ string = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
 boolean = @{ "true" | "false" }
 
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+
 COMMENT = _{ "//" ~ (!"\n" ~ ANY)* }
