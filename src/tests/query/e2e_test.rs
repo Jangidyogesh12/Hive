@@ -247,6 +247,52 @@ fn end_to_end_complex_match_chained_relationships() {
     cleanup_dir(&dir);
 }
 
+#[test]
+fn end_to_end_merge_is_idempotent_for_same_pattern() {
+    let dir = temp_dir("query_merge_idempotent");
+    let mut db = HiveDb::open(&dir).unwrap();
+
+    parse_and_exec("MERGE (n:Person {name: \"Alice\"})", &mut db);
+    parse_and_exec("MERGE (n:Person {name: \"Alice\"})", &mut db);
+
+    let stmt = parse("MATCH (n:Person) WHERE n.name = \"Alice\" RETURN n").unwrap();
+    let query_plan = plan(stmt).unwrap();
+    let mut executor = Executor::new(&mut db);
+    let result = executor.execute(query_plan).unwrap();
+    assert_eq!(result.rows.len(), 1);
+
+    db.close();
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn end_to_end_merge_creates_new_node_for_different_properties() {
+    let dir = temp_dir("query_merge_different_properties");
+    let mut db = HiveDb::open(&dir).unwrap();
+
+    parse_and_exec("MERGE (n:Person {name: \"Alice\"})", &mut db);
+    parse_and_exec("MERGE (n:Person {name: \"Bob\"})", &mut db);
+
+    let stmt = parse("MATCH (n:Person) RETURN n").unwrap();
+    let query_plan = plan(stmt).unwrap();
+    let mut executor = Executor::new(&mut db);
+    let result = executor.execute(query_plan).unwrap();
+    assert_eq!(result.rows.len(), 2);
+
+    db.close();
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn merge_path_pattern_is_rejected() {
+    let stmt = parse("MERGE (a:Person)-[:KNOWS]->(b:Person)").unwrap();
+    let err = plan(stmt).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("MERGE currently supports only single node patterns")
+    );
+}
+
 fn parse_and_exec(input: &str, db: &mut HiveDb) {
     let stmt = parse(input).unwrap();
     let query_plan = plan(stmt).unwrap();
