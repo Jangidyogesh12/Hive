@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::db::hive_db::{HiveDb, Property};
+use crate::db::hive_db::{HiveDb, Node, Property};
 use crate::errors::DbError;
 use crate::query::ast::{
     BinaryOp, Direction, Expression, NodePattern, RelationshipLength, ReturnItem, UnaryOp,
@@ -28,6 +28,10 @@ impl<'a> Executor<'a> {
         match plan {
             QueryPlan::CreateNode { node } => {
                 self.exec_create_node(node)?;
+                Ok(QueryResult::new(vec![], vec![]))
+            }
+            QueryPlan::MergeNode { node } => {
+                self.exec_merge_node(node)?;
                 Ok(QueryResult::new(vec![], vec![]))
             }
             QueryPlan::CreateRelationship {
@@ -71,6 +75,49 @@ impl<'a> Executor<'a> {
 
         let node_id = self.db.create_node(&node.label.unwrap(), props)?;
         Ok(node_id)
+    }
+
+    fn exec_merge_node(&mut self, node: NodePattern) -> Result<NodeId, DbError> {
+        let label = node.label.clone().ok_or(DbError::QueryError(
+            "MERGE requires a node label".to_string(),
+        ))?;
+
+        let mut expected: Vec<(String, Value)> = Vec::new();
+
+        for (k, expr) in &node.properties {
+            expected.push((k.clone(), expression_to_literal(expr)?));
+        }
+
+        let count = self.db.node_count()?;
+
+        for id in 0..count {
+            let rec = self.db.get_node(id)?;
+
+            if (rec.flags & DELETED) != 0 {
+                continue;
+            }
+            if rec.label != label {
+                continue;
+            }
+
+            let mut all_match = true;
+
+            for (k, v_expected) in &expected {
+                let v_actual = self.db.get_node_property(id, k)?;
+                match v_actual {
+                    Some(v) if v == *v_expected => {}
+                    _ => {
+                        all_match = false;
+                        break;
+                    }
+                }
+            }
+            if all_match {
+                return Ok(id);
+            }
+        }
+
+        self.exec_create_node(node)
     }
 
     /// Creates a Relation Ship with node Creation via `HiveDb::create_edge`.

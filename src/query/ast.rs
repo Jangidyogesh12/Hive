@@ -3,6 +3,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
     Create(Pattern),
+    Merge(Pattern),
     Match(Box<MatchClause>),
     Delete(String),
     Set(Box<SetClause>),

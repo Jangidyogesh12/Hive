@@ -11,6 +11,9 @@ pub enum QueryPlan {
     CreateNode {
         node: NodePattern,
     },
+    MergeNode {
+        node: NodePattern,
+    },
     CreateRelationship {
         src: NodePattern,
         dst: NodePattern,
@@ -51,6 +54,7 @@ pub enum QueryPlan {
 pub fn plan(stmt: Statement) -> Result<QueryPlan, DbError> {
     match stmt {
         Statement::Create(input) => plan_create(input),
+        Statement::Merge(input) => plan_merge(input),
         Statement::Match(match_clause) => plan_match(*match_clause),
         Statement::Delete(var) => Ok(QueryPlan::DeleteEntity { variable: var }),
         Statement::Set(set_clause) => plan_set(*set_clause),
@@ -88,6 +92,15 @@ fn plan_create(input: Pattern) -> Result<QueryPlan, DbError> {
                 properties,
             })
         }
+    }
+}
+
+fn plan_merge(input: Pattern) -> Result<QueryPlan, DbError> {
+    match input {
+        Pattern::Node(node) => Ok(QueryPlan::MergeNode { node }),
+        Pattern::Path(_) => Err(DbError::QueryError(
+            "MERGE currently supports only single node patterns".to_string(),
+        )),
     }
 }
 

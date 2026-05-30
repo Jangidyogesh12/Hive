@@ -1,10 +1,12 @@
-statement = { SOI ~ (create_stmt | match_stmt | delete_stmt | set_stmt) ~ EOI }
+statement = { SOI ~ (create_stmt | match_stmt | delete_stmt | set_stmt | merge_stmt) ~ EOI }
 
 create_stmt = { "CREATE" ~ pattern }
 
 match_stmt = { "MATCH" ~ pattern ~ where_clause? ~ return_clause }
 
 delete_stmt = { "DELETE" ~ variable }
+
+merge_stmt = {"MERGE" ~ pattern ~ return_clause?}
 
 set_stmt = { "SET" ~ set_item }
 

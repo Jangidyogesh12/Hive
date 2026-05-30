@@ -34,6 +34,11 @@ fn build_statement(pair: pest::iterators::Pair<Rule>) -> Result<Statement, Strin
             let node = build_pattern(inner)?;
             Ok(Statement::Create(node))
         }
+        Rule::merge_stmt => {
+            let inner = pair.into_inner().next().ok_or("Expected node pattern")?;
+            let pattern = build_pattern(inner)?;
+            Ok(Statement::Create(pattern))
+        }
         Rule::match_stmt => {
             let mut inner = pair.into_inner();
 
