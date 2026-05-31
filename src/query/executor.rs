@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::db::hive_db::{HiveDb, Property};
+use crate::db::hive_db::{Edge, HiveDb, Node, Property};
 use crate::errors::DbError;
 use crate::query::ast::{
     BinaryOp, Direction, Expression, NodePattern, RelationshipLength, ReturnItem, UnaryOp,
@@ -11,7 +11,12 @@ use crate::query::utils::expression_to_literal;
 use crate::types::{DELETED, EdgeId, NIL_ID, NodeId};
 use crate::value::{self, Value};
 
-type Row = HashMap<String, u64>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Binding {
+    Node(u64),
+    Edge(u64),
+}
+type Row = HashMap<String, Binding>;
 
 pub struct Executor<'a> {
     db: &'a mut HiveDb,
@@ -54,6 +59,46 @@ impl<'a> Executor<'a> {
                 let rows = self.exec_plan_step(other, &[HashMap::new()])?;
                 self.rows_to_result(&rows)
             }
+        }
+    }
+
+    fn format_node_binding(&self, node: &Node) -> String {
+        let props = node
+            .properties
+            .iter()
+            .map(|p| {
+                let v = Value::from_bytes(p.value_type, p.value_inline);
+                format!("{}:{}", p.key_value, self.value_to_compact_string(&v))
+            })
+            .collect::<Vec<String>>()
+            .join(",");
+        format!(
+            "{{id:{},label:\"{}\",props:{{{}}}}}",
+            node.id, node.label, props
+        )
+    }
+    fn format_edge_binding(&self, edge: &Edge) -> String {
+        let props = edge
+            .properties
+            .iter()
+            .map(|p| {
+                let v = Value::from_bytes(p.value_type, p.value_inline);
+                format!("{}:{}", p.key_value, self.value_to_compact_string(&v))
+            })
+            .collect::<Vec<String>>()
+            .join(",");
+        format!(
+            "{{id:{},type:\"{}\",src:{},dst:{},props:{{{}}}}}",
+            edge.id, edge.label, edge.src, edge.dst, props
+        )
+    }
+    fn value_to_compact_string(&self, v: &Value) -> String {
+        match v {
+            Value::Null => "NULL".to_string(),
+            Value::Integer(n) => n.to_string(),
+            Value::Float(f) => f.to_string(),
+            Value::Boolean(b) => b.to_string(),
+            Value::String(s) => format!("\"{}\"", s),
         }
     }
 
@@ -180,10 +225,10 @@ impl<'a> Executor<'a> {
             .map(|r| {
                 columns
                     .iter()
-                    .map(|col| {
-                        r.get(col)
-                            .map(|&id| Value::Integer(id as i64))
-                            .unwrap_or(Value::Null)
+                    .map(|col| match r.get(col) {
+                        Some(Binding::Node(id)) => Value::Integer(*id as i64),
+                        Some(Binding::Edge(id)) => Value::Integer(*id as i64),
+                        None => Value::Null,
                     })
                     .collect()
             })
@@ -218,11 +263,13 @@ impl<'a> Executor<'a> {
                 to_var,
                 to_label,
                 hops,
+                edge_var,
             } => {
                 let mut new_rows = Vec::new();
                 for row in rows {
                     let traversed = self.traverse_edges(
                         row, &from_var, &edge_type, &direction, &to_var, &to_label, &hops,
+                        &edge_var,
                     )?;
                     new_rows.extend(traversed);
                 }
@@ -239,8 +286,8 @@ impl<'a> Executor<'a> {
             }
             QueryPlan::DeleteEntity { variable } => {
                 for row in rows {
-                    if let Some(&id) = row.get(&variable) {
-                        self.db.delete_node(id)?;
+                    if let Some(Binding::Node(id)) = row.get(&variable) {
+                        self.db.delete_node(*id)?;
                     }
                 }
                 Ok(rows.to_vec())
@@ -251,8 +298,8 @@ impl<'a> Executor<'a> {
                 value,
             } => {
                 for row in rows {
-                    if let Some(&id) = row.get(&variable) {
-                        self.db.set_node_property(id, &key, value.clone())?;
+                    if let Some(Binding::Node(id)) = row.get(&variable) {
+                        self.db.set_node_property(*id, &key, value.clone())?;
                     }
                 }
                 Ok(rows.to_vec())
@@ -302,7 +349,7 @@ impl<'a> Executor<'a> {
 
             let row = {
                 let mut m = HashMap::new();
-                m.insert(variable.to_string(), id);
+                m.insert(variable.to_string(), Binding::Node(id));
                 m
             };
 
@@ -329,10 +376,11 @@ impl<'a> Executor<'a> {
         to_var: &str,
         to_label: &Option<String>,
         hops: &Option<RelationshipLength>,
+        edge_var: &Option<String>,
     ) -> Result<Vec<Row>, DbError> {
         let from_id = match row.get(from_var) {
-            Some(&id) => id,
-            None => return Ok(vec![]),
+            Some(Binding::Node(id)) => *id,
+            _ => return Ok(vec![]),
         };
 
         let (min_hops, max_hops) = match hops {
@@ -360,11 +408,15 @@ impl<'a> Executor<'a> {
             let next_depth = depth + 1;
             let neighbors = self.collect_neighbors(current_id, edge_type, direction, to_label)?;
 
-            for neighbor_id in neighbors {
+            for (neighbor_id, traverse_edge_id) in neighbors {
                 if visited.insert(neighbor_id) {
                     if next_depth >= min_hops && next_depth <= max_hops {
                         let mut new_row = row.clone();
-                        new_row.insert(to_var.to_string(), neighbor_id);
+                        new_row.insert(to_var.to_string(), Binding::Node(neighbor_id));
+
+                        if let Some(edge_var_name) = edge_var {
+                            new_row.insert(edge_var_name.clone(), Binding::Edge(traverse_edge_id));
+                        }
                         results.push(new_row);
                     }
                     queue.push_back((neighbor_id, next_depth));
@@ -381,9 +433,9 @@ impl<'a> Executor<'a> {
         edge_type: &Option<String>,
         direction: &Direction,
         to_label: &Option<String>,
-    ) -> Result<Vec<u64>, DbError> {
+    ) -> Result<Vec<(u64, u64)>, DbError> {
         let node = self.db.get_node(from_id)?;
-        let mut neighbors = Vec::new();
+        let mut neighbors: Vec<(u64, u64)> = Vec::new();
 
         match direction {
             Direction::Outgoing => {
@@ -438,7 +490,7 @@ impl<'a> Executor<'a> {
         incoming: bool,
         edge_type: &Option<String>,
         to_label: &Option<String>,
-        neighbors: &mut Vec<u64>,
+        neighbors: &mut Vec<(u64, u64)>,
     ) -> Result<(), DbError> {
         let mut edge_id = first_edge;
 
@@ -480,7 +532,7 @@ impl<'a> Executor<'a> {
                 }
             }
 
-            neighbors.push(neighbor_id);
+            neighbors.push((neighbor_id, edge.id));
 
             edge_id = next_id;
         }
@@ -556,20 +608,36 @@ impl<'a> Executor<'a> {
             Expression::String(s) => Ok(Value::String(s.clone())),
             Expression::Boolean(b) => Ok(Value::Boolean(*b)),
             Expression::Variable(name) => match row.get(name) {
-                Some(&id) => Ok(Value::Integer(id as i64)),
+                Some(Binding::Node(id)) => {
+                    let node = self.db.get_node(*id)?;
+                    Ok(Value::String(self.format_node_binding(&node)))
+                }
+                Some(Binding::Edge(id)) => {
+                    let edge = self.db.get_edge(*id)?;
+                    Ok(Value::String(self.format_edge_binding(&edge)))
+                }
                 None => Err(DbError::QueryError(format!(
                     "Variable '{}' is not bound",
                     name
                 ))),
             },
             Expression::Property { variable, property } => match row.get(variable) {
-                Some(&id) => self
-                    .db
-                    .get_node_property(id, property)?
-                    .ok_or(DbError::QueryError(format!(
-                        "Property '{}' not found on '{}'",
-                        property, variable
-                    ))),
+                Some(Binding::Node(id)) => {
+                    self.db
+                        .get_node_property(*id, property)?
+                        .ok_or(DbError::QueryError(format!(
+                            "Property '{}' not found on '{}'",
+                            property, variable
+                        )))
+                }
+                Some(Binding::Edge(id)) => {
+                    self.db
+                        .get_edge_property(*id, property)?
+                        .ok_or(DbError::QueryError(format!(
+                            "Property '{}' not found on '{}'",
+                            property, variable
+                        )))
+                }
                 None => Err(DbError::QueryError(format!(
                     "Variable '{}' is not bound",
                     variable

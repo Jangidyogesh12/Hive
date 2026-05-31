@@ -32,6 +32,7 @@ pub enum QueryPlan {
         to_var: String,
         to_label: Option<String>,
         hops: Option<RelationshipLength>,
+        edge_var: Option<String>,
     },
     Filter {
         condition: Expression,
@@ -170,6 +171,7 @@ fn plan_match(clause: MatchClause) -> Result<QueryPlan, DbError> {
                     to_var: to_variable.clone(),
                     to_label: seg.node.label.clone(),
                     hops: seg.relationship.hops.clone(),
+                    edge_var: seg.relationship.variable.clone(),
                 });
 
                 let mut node_filter = Vec::new();
