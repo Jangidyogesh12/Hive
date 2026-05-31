@@ -6,7 +6,7 @@ use crate::query::ast::{
     BinaryOp, Direction, Expression, NodePattern, RelationshipLength, ReturnItem, UnaryOp,
 };
 use crate::query::planner::QueryPlan;
-use crate::query::types::QueryResult;
+use crate::query::result::QueryResult;
 use crate::query::utils::expression_to_literal;
 use crate::types::{DELETED, EdgeId, NIL_ID, NodeId};
 use crate::value::{self, Value};

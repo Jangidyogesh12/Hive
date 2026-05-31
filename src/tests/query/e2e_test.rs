@@ -56,6 +56,21 @@ fn end_to_end_create_and_match_with_traversal() {
     let result = executor.execute(query_plan).unwrap();
     assert_eq!(result.rows.len(), 1);
 
+    let stmt = parse("MATCH (n:Person)-[e:KNOWS]->(m:Person) RETURN e").unwrap();
+    let query_plan = plan(stmt).unwrap();
+    let result = executor.execute(query_plan).unwrap();
+    assert_eq!(result.columns, vec!["e".to_string()]);
+    assert_eq!(result.rows.len(), 1);
+    match &result.rows[0][0] {
+        Value::String(s) => {
+            assert!(s.contains("type:\"KNOWS\""));
+            assert!(s.contains("src:"));
+            assert!(s.contains("dst:"));
+            assert!(s.contains("props:{"));
+        }
+        other => panic!("Expected edge string, got {:?}", other),
+    }
+
     db.close();
     cleanup_dir(&dir);
 }
@@ -301,33 +316,39 @@ fn parse_and_exec(input: &str, db: &mut HiveDb) {
 }
 
 fn match_first_node(name: &str, db: &mut HiveDb) -> u64 {
-    let query = format!(
-        "MATCH (n:Person) WHERE n.name = \"{}\" RETURN n",
-        name
-    );
-    let stmt = parse(&query).unwrap();
-    let query_plan = plan(stmt).unwrap();
-    let mut executor = Executor::new(db);
-    let result = executor.execute(query_plan).unwrap();
-    if let crate::value::Value::Integer(id) = result.rows[0][0] {
-        id as u64
-    } else {
-        panic!("Expected integer node ID");
+    let count = db.node_count().unwrap();
+    for id in 0..count {
+        let node = db.get_node(id).unwrap();
+        if (node.flags & crate::types::DELETED) != 0 {
+            continue;
+        }
+        if node.label != "Person" {
+            continue;
+        }
+        if let Some(Value::String(node_name)) = db.get_node_property(id, "name").unwrap() {
+            if node_name == name {
+                return id;
+            }
+        }
     }
+    panic!("Expected matching Person node");
 }
 
 fn match_first_company(name: &str, db: &mut HiveDb) -> u64 {
-    let query = format!(
-        "MATCH (n:Company) WHERE n.name = \"{}\" RETURN n",
-        name
-    );
-    let stmt = parse(&query).unwrap();
-    let query_plan = plan(stmt).unwrap();
-    let mut executor = Executor::new(db);
-    let result = executor.execute(query_plan).unwrap();
-    if let crate::value::Value::Integer(id) = result.rows[0][0] {
-        id as u64
-    } else {
-        panic!("Expected integer node ID");
+    let count = db.node_count().unwrap();
+    for id in 0..count {
+        let node = db.get_node(id).unwrap();
+        if (node.flags & crate::types::DELETED) != 0 {
+            continue;
+        }
+        if node.label != "Company" {
+            continue;
+        }
+        if let Some(Value::String(node_name)) = db.get_node_property(id, "name").unwrap() {
+            if node_name == name {
+                return id;
+            }
+        }
     }
+    panic!("Expected matching Company node");
 }
