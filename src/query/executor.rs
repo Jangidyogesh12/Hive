@@ -330,10 +330,10 @@ impl<'a> Executor<'a> {
         label: &Option<String>,
         filter: &Option<Expression>,
     ) -> Result<Vec<Row>, DbError> {
-        let count = self.db.node_count()?;
         let mut rows = Vec::new();
+        let candidate_ids = self.node_scan_candidates(variable, label, filter)?;
 
-        for id in 0..count {
+        for id in candidate_ids {
             let node = self.db.get_node(id)?;
             if (node.flags & DELETED) != 0 {
                 continue;
@@ -363,6 +363,38 @@ impl<'a> Executor<'a> {
         }
 
         Ok(rows)
+    }
+
+    fn node_scan_candidates(
+        &mut self,
+        variable: &str,
+        label: &Option<String>,
+        filter: &Option<Expression>,
+    ) -> Result<Vec<NodeId>, DbError> {
+        let property_filter = filter
+            .as_ref()
+            .and_then(|expr| extract_exact_property_match(variable, expr));
+
+        match (label.as_ref(), property_filter) {
+            (Some(label_name), Some((property, value))) => {
+                let property_ids = self.db.lookup_node_ids_by_property(&property, &value)?;
+                let label_ids = self.db.lookup_node_ids_by_label(label_name)?;
+                let label_set: HashSet<NodeId> = label_ids.into_iter().collect();
+
+                Ok(property_ids
+                    .into_iter()
+                    .filter(|id| label_set.contains(id))
+                    .collect())
+            }
+            (Some(label_name), None) => self.db.lookup_node_ids_by_label(label_name),
+            (None, Some((property, value))) => {
+                self.db.lookup_node_ids_by_property(&property, &value)
+            }
+            (None, None) => {
+                let count = self.db.node_count()?;
+                Ok((0..count).collect())
+            }
+        }
     }
 
     /// Traverses edges from a bound row variable in the specified direction,
@@ -714,6 +746,38 @@ fn eval_unary_op(op: &UnaryOp, val: &Value) -> Value {
             Value::Boolean(b) => Value::Boolean(!b),
             _ => Value::Boolean(false),
         },
+    }
+}
+
+fn extract_exact_property_match(variable: &str, expr: &Expression) -> Option<(String, Value)> {
+    match expr {
+        Expression::BinaryOp { left, op, right } if *op == BinaryOp::Eq => match (&**left, &**right)
+        {
+            (
+                Expression::Property {
+                    variable: prop_variable,
+                    property,
+                },
+                literal,
+            ) if prop_variable == variable => expression_to_literal(literal)
+                .ok()
+                .map(|value| (property.clone(), value)),
+            (
+                literal,
+                Expression::Property {
+                    variable: prop_variable,
+                    property,
+                },
+            ) if prop_variable == variable => expression_to_literal(literal)
+                .ok()
+                .map(|value| (property.clone(), value)),
+            _ => None,
+        },
+        Expression::BinaryOp { left, op, right } if *op == BinaryOp::And => {
+            extract_exact_property_match(variable, left)
+                .or_else(|| extract_exact_property_match(variable, right))
+        }
+        _ => None,
     }
 }
 

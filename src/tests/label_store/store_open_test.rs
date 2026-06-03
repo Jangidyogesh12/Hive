@@ -42,3 +42,23 @@ fn open_initializes_empty_maps() {
     assert!(store.id_to_label.is_empty());
     cleanup_file(&path);
 }
+
+#[test]
+fn open_loads_existing_labels_from_disk() {
+    let path = temp_file("label_open_loads_existing_labels_from_disk");
+
+    {
+        let mut store = LabelStore::open(&path).unwrap();
+        store.get_or_create("User").unwrap();
+        store.get_or_create("Product").unwrap();
+    }
+
+    let reopened = LabelStore::open(&path).unwrap();
+
+    assert_eq!(reopened.get_by_id(1), Some("User"));
+    assert_eq!(reopened.get_by_id(2), Some("Product"));
+    assert_eq!(reopened.get_id("User"), Some(1));
+    assert_eq!(reopened.next_id, 3);
+
+    cleanup_file(&path);
+}

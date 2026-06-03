@@ -1,6 +1,7 @@
+use crate::db::index::IndexStore;
 use crate::db::store_path::{
-    EDGE_STORE_FILE, FREE_LIST_EDGE, FREE_LIST_NODE, LABEL_STORE_FILE, META_FILE,
-    NODE_STORE_FILE, PROP_STORE_FILE, STRING_STORE_FILE,
+    EDGE_STORE_FILE, FREE_LIST_EDGE, FREE_LIST_NODE, INDEX_STORE_FILE, LABEL_STORE_FILE,
+    META_FILE, NODE_STORE_FILE, PROP_STORE_FILE, STRING_STORE_FILE,
 };
 use crate::errors::DbError;
 use crate::store::edge::record::EdgeRecord;
@@ -29,6 +30,8 @@ pub struct HiveDb {
     label_store: LabelStore,
     node_free_list: FreeList,
     edge_free_list: FreeList,
+    index_path: PathBuf,
+    index_store: IndexStore,
 }
 
 #[derive(Debug, PartialEq)]
@@ -92,16 +95,24 @@ impl HiveDb {
         let prop_store_path = path.join(PROP_STORE_FILE);
         let string_store_path = path.join(STRING_STORE_FILE);
         let label_store_path = path.join(LABEL_STORE_FILE);
+        let index_path = path.join(INDEX_STORE_FILE);
         let node_free_list_path = path.join(FREE_LIST_NODE);
         let edge_free_list_path = path.join(FREE_LIST_EDGE);
 
-        let node_store = NodeStore::open(&node_store_path)?;
-        let edge_store = EdgeStore::open(&edge_store_path)?;
-        let property_store = PropertyStore::open(&prop_store_path)?;
-        let string_store = StringStore::open(&string_store_path)?;
+        let mut node_store = NodeStore::open(&node_store_path)?;
+        let mut edge_store = EdgeStore::open(&edge_store_path)?;
+        let mut property_store = PropertyStore::open(&prop_store_path)?;
+        let mut string_store = StringStore::open(&string_store_path)?;
         let label_store = LabelStore::open(&label_store_path)?;
         let node_free_list = FreeList::open(&node_free_list_path)?;
         let edge_free_list = FreeList::open(&edge_free_list_path)?;
+        let index_store = IndexStore::load_or_rebuild(
+            &index_path,
+            &mut node_store,
+            &mut edge_store,
+            &mut property_store,
+            &mut string_store,
+        )?;
 
         Ok(Self {
             header,
@@ -113,7 +124,13 @@ impl HiveDb {
             label_store,
             node_free_list,
             edge_free_list,
+            index_path,
+            index_store,
         })
+    }
+
+    fn persist_indexes(&self) -> Result<(), DbError> {
+        self.index_store.save(&self.index_path)
     }
 
     /// Writes the current in-memory header to the meta file.
@@ -182,6 +199,13 @@ impl HiveDb {
         self.header.node_count += 1;
         self.header.property_count += prop_count;
         self.flush_header()?;
+        self.index_store.insert_node(
+            node_id,
+            &node_record,
+            &mut self.property_store,
+            &mut self.string_store,
+        )?;
+        self.persist_indexes()?;
 
         Ok(node_id)
     }
@@ -254,6 +278,8 @@ impl HiveDb {
         self.header.edge_count += 1;
         self.header.property_count += prop_count;
         self.flush_header()?;
+        self.index_store.insert_edge(edge_id, &edge_record);
+        self.persist_indexes()?;
 
         Ok(edge_id)
     }
@@ -345,6 +371,7 @@ impl HiveDb {
         let node = self.node_store.read(node_id)?;
         let key_hash = value::hash_key(key);
         let key_offset = self.string_store.append(key)?;
+        let old_value = self.get_node_property(node_id, key)?;
 
         let (value_type, mut value_inline) = value.to_inline_bytes();
 
@@ -364,6 +391,9 @@ impl HiveDb {
                 updated.value_inline = value_inline;
                 updated.key_offset = key_offset;
                 self.property_store.update(curr, updated)?;
+                self.index_store
+                    .upsert_node_property(node_id, key_hash, old_value.as_ref(), &value);
+                self.persist_indexes()?;
                 return Ok(());
             }
             curr = prop.next_property;
@@ -397,6 +427,9 @@ impl HiveDb {
         self.property_store.append(record)?;
         self.header.property_count += 1;
         self.flush_header()?;
+        self.index_store
+            .upsert_node_property(node_id, key_hash, old_value.as_ref(), &value);
+        self.persist_indexes()?;
         Ok(())
     }
 
@@ -525,6 +558,14 @@ impl HiveDb {
     pub fn delete_node(&mut self, id: u64) -> Result<u64, DbError> {
         let mut record = self.node_store.read(id)?;
         let was_deleted = (record.flags & DELETED) != 0;
+        if !was_deleted {
+            self.index_store.remove_node(
+                id,
+                &record,
+                &mut self.property_store,
+                &mut self.string_store,
+            )?;
+        }
         record.flags |= DELETED;
 
         self.node_store.update(id, record)?;
@@ -532,6 +573,7 @@ impl HiveDb {
         if !was_deleted {
             self.header.node_count -= 1;
             self.flush_header()?;
+            self.persist_indexes()?;
         }
         Ok(id)
     }
@@ -540,6 +582,9 @@ impl HiveDb {
     pub fn delete_edge(&mut self, id: u64) -> Result<u64, DbError> {
         let mut record = self.edge_store.read(id)?;
         let was_deleted = (record.flags & DELETED) != 0;
+        if !was_deleted {
+            self.index_store.remove_edge(id, &record);
+        }
 
         // Unlink the source node
         let mut src_node = self.node_store.read(record.src)?;
@@ -585,9 +630,34 @@ impl HiveDb {
         if !was_deleted {
             self.header.edge_count -= 1;
             self.flush_header()?;
+            self.persist_indexes()?;
         }
 
         Ok(id)
+    }
+
+    pub fn lookup_node_ids_by_label(&self, label: &str) -> Result<Vec<NodeId>, DbError> {
+        match self.label_store.get_id(label) {
+            Some(label_id) => Ok(self.index_store.lookup_nodes_by_label_id(label_id)),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    pub fn lookup_node_ids_by_property(
+        &self,
+        key: &str,
+        value: &Value,
+    ) -> Result<Vec<NodeId>, DbError> {
+        Ok(self
+            .index_store
+            .lookup_nodes_by_property(value::hash_key(key), value))
+    }
+
+    pub fn lookup_edge_ids_by_type(&self, edge_type: &str) -> Result<Vec<EdgeId>, DbError> {
+        match self.label_store.get_id(edge_type) {
+            Some(label_id) => Ok(self.index_store.lookup_edges_by_type_id(label_id)),
+            None => Ok(Vec::new()),
+        }
     }
 
     /// Returns all non-deleted destination node IDs reachable via outgoing edges
