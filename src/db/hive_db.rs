@@ -109,7 +109,11 @@ impl HiveDb {
         let label_store = LabelStore::open(&label_store_path)?;
         let node_free_list = FreeList::open(&node_free_list_path)?;
         let edge_free_list = FreeList::open(&edge_free_list_path)?;
-        let wal = Wal::open(&wal_path)?;
+        let mut wal = Wal::open(&wal_path)?;
+        let wal_entries = wal.read_all()?;
+        if matches!(wal_entries.last(), None | Some(WalEntry::Checkpoint)) {
+            wal.truncate()?;
+        }
         let index_store = IndexStore::load_or_rebuild(
             &index_path,
             &mut node_store,
@@ -137,6 +141,10 @@ impl HiveDb {
     fn append_wal(&mut self, entry: &WalEntry) -> Result<(), DbError> {
         self.wal.append(entry)?;
         self.wal.sync()
+    }
+
+    fn checkpoint_wal(&mut self) -> Result<(), DbError> {
+        self.append_wal(&WalEntry::Checkpoint)
     }
 
     fn properties_to_wal(properties: &[Property]) -> Result<Vec<WalProperty>, DbError> {
@@ -243,6 +251,7 @@ impl HiveDb {
             &mut self.string_store,
         )?;
         self.persist_indexes()?;
+        self.checkpoint_wal()?;
 
         Ok(node_id)
     }
@@ -330,6 +339,7 @@ impl HiveDb {
         self.flush_header()?;
         self.index_store.insert_edge(edge_id, &edge_record);
         self.persist_indexes()?;
+        self.checkpoint_wal()?;
 
         Ok(edge_id)
     }
@@ -450,6 +460,7 @@ impl HiveDb {
                 self.index_store
                     .upsert_node_property(node_id, key_hash, old_value.as_ref(), &value);
                 self.persist_indexes()?;
+                self.checkpoint_wal()?;
                 return Ok(());
             }
             curr = prop.next_property;
@@ -486,6 +497,7 @@ impl HiveDb {
         self.index_store
             .upsert_node_property(node_id, key_hash, old_value.as_ref(), &value);
         self.persist_indexes()?;
+        self.checkpoint_wal()?;
         Ok(())
     }
 
@@ -552,6 +564,7 @@ impl HiveDb {
                 updated.value_inline = value_inline;
                 updated.key_offset = key_offset;
                 self.property_store.update(curr, updated)?;
+                self.checkpoint_wal()?;
                 return Ok(());
             }
             curr = prop.next_property;
@@ -585,6 +598,7 @@ impl HiveDb {
         self.property_store.append(record)?;
         self.header.property_count += 1;
         self.flush_header()?;
+        self.checkpoint_wal()?;
         Ok(())
     }
 
@@ -639,6 +653,7 @@ impl HiveDb {
             self.flush_header()?;
             self.persist_indexes()?;
         }
+        self.checkpoint_wal()?;
         Ok(id)
     }
     /// Marks an edge as deleted, unlinks it from source and destination node chains,
@@ -698,6 +713,8 @@ impl HiveDb {
             self.flush_header()?;
             self.persist_indexes()?;
         }
+
+        self.checkpoint_wal()?;
 
         Ok(id)
     }

@@ -3,6 +3,7 @@ use crate::db::hive_db::HiveDb;
 use crate::db::store_path::WAL_FILE;
 use crate::value::Value;
 use crate::wal::{Wal, WalEntry, WalProperty};
+use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write};
 
@@ -152,11 +153,14 @@ fn hive_db_create_node_writes_wal_entry() {
 
     assert_eq!(
         entries,
-        vec![WalEntry::CreateNode {
-            node_id: 0,
-            label: "Person".to_string(),
-            properties: vec![],
-        }]
+        vec![
+            WalEntry::CreateNode {
+                node_id: 0,
+                label: "Person".to_string(),
+                properties: vec![],
+            },
+            WalEntry::Checkpoint,
+        ]
     );
 
     cleanup_dir(&dir);
@@ -185,12 +189,15 @@ fn hive_db_property_and_delete_operations_write_wal_entries() {
                 label: "Person".to_string(),
                 properties: vec![],
             },
+            WalEntry::Checkpoint,
             WalEntry::UpdateNode {
                 node_id: 0,
                 key: "name".to_string(),
                 value: Value::String("Alice".to_string()),
             },
+            WalEntry::Checkpoint,
             WalEntry::DeleteNode { node_id: 0 },
+            WalEntry::Checkpoint,
         ]
     );
 
@@ -222,11 +229,13 @@ fn hive_db_edge_operations_write_wal_entries() {
                 label: "A".to_string(),
                 properties: vec![],
             },
+            WalEntry::Checkpoint,
             WalEntry::CreateNode {
                 node_id: 1,
                 label: "B".to_string(),
                 properties: vec![],
             },
+            WalEntry::Checkpoint,
             WalEntry::CreateEdge {
                 edge_id: 0,
                 src: 0,
@@ -234,14 +243,66 @@ fn hive_db_edge_operations_write_wal_entries() {
                 label: "KNOWS".to_string(),
                 properties: vec![],
             },
+            WalEntry::Checkpoint,
             WalEntry::UpdateEdge {
                 edge_id: 0,
                 key: "since".to_string(),
                 value: Value::Integer(2020),
             },
+            WalEntry::Checkpoint,
             WalEntry::DeleteEdge { edge_id: 0 },
+            WalEntry::Checkpoint,
         ]
     );
+
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn hive_db_reopen_truncates_checkpointed_wal() {
+    let dir = temp_dir("hive_db_reopen_truncates_checkpointed_wal");
+
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        let node_id = db.create_node("Person", vec![]).unwrap();
+        db.set_node_property(node_id, "name", Value::String("Alice".to_string()))
+            .unwrap();
+        db.close();
+    }
+
+    let mut wal = Wal::open(&dir.join(WAL_FILE)).unwrap();
+    let entries = wal.read_all().unwrap();
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries.last(), Some(&WalEntry::Checkpoint));
+
+    {
+        let mut reopened = HiveDb::open(&dir).unwrap();
+        let name = reopened.get_node_property(0, "name").unwrap();
+        assert_eq!(name, Some(Value::String("Alice".to_string())));
+    }
+
+    let metadata = fs::metadata(dir.join(WAL_FILE)).unwrap();
+    assert_eq!(metadata.len(), 0);
+
+    let mut wal = Wal::open(&dir.join(WAL_FILE)).unwrap();
+    assert!(wal.read_all().unwrap().is_empty());
+
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn hive_db_open_keeps_dirty_wal() {
+    let dir = temp_dir("hive_db_open_keeps_dirty_wal");
+
+    {
+        let mut wal = Wal::open(&dir.join(WAL_FILE)).unwrap();
+        wal.append(&WalEntry::DeleteNode { node_id: 9 }).unwrap();
+    }
+
+    let _db = HiveDb::open(&dir).unwrap();
+
+    let mut wal = Wal::open(&dir.join(WAL_FILE)).unwrap();
+    assert_eq!(wal.read_all().unwrap(), vec![WalEntry::DeleteNode { node_id: 9 }]);
 
     cleanup_dir(&dir);
 }
