@@ -7,3 +7,4 @@ pub const INDEX_STORE_FILE: &str = "indexes.hive";
 pub const FREE_LIST_NODE: &str = "freelist_nodes.hive";
 pub const FREE_LIST_EDGE: &str = "freelist_edges.hive";
 pub const META_FILE: &str = "meta.hive";
+pub const WAL_FILE: &str = "wal.hive";

@@ -47,6 +47,11 @@ impl FreeList {
         Some(id)
     }
 
+    /// Returns the most recently freed ID without removing it.
+    pub fn peek(&self) -> Option<u64> {
+        self.freed.last().copied()
+    }
+
     /// Pushes a freed ID onto the list and flushes to disk.
     pub fn push(&mut self, id: u64) -> Result<(), DbError> {
         self.freed.push(id);

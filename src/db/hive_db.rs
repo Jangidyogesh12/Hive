@@ -1,7 +1,7 @@
 use crate::db::index::IndexStore;
 use crate::db::store_path::{
     EDGE_STORE_FILE, FREE_LIST_EDGE, FREE_LIST_NODE, INDEX_STORE_FILE, LABEL_STORE_FILE,
-    META_FILE, NODE_STORE_FILE, PROP_STORE_FILE, STRING_STORE_FILE,
+    META_FILE, NODE_STORE_FILE, PROP_STORE_FILE, STRING_STORE_FILE, WAL_FILE,
 };
 use crate::errors::DbError;
 use crate::store::edge::record::EdgeRecord;
@@ -17,6 +17,7 @@ use crate::store::string_store::StringStore;
 use crate::types::DELETED;
 use crate::types::{EdgeId, NIL_ID, NodeId};
 use crate::value::{self, LONG_STRING, Value};
+use crate::wal::{Wal, WalEntry, WalProperty};
 use std::path::PathBuf;
 use std::{fs, io::Error, path::Path};
 
@@ -32,9 +33,10 @@ pub struct HiveDb {
     edge_free_list: FreeList,
     index_path: PathBuf,
     index_store: IndexStore,
+    wal: Wal,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Property {
     pub key_value: String,
     pub key_hash: u64,
@@ -96,6 +98,7 @@ impl HiveDb {
         let string_store_path = path.join(STRING_STORE_FILE);
         let label_store_path = path.join(LABEL_STORE_FILE);
         let index_path = path.join(INDEX_STORE_FILE);
+        let wal_path = path.join(WAL_FILE);
         let node_free_list_path = path.join(FREE_LIST_NODE);
         let edge_free_list_path = path.join(FREE_LIST_EDGE);
 
@@ -106,6 +109,7 @@ impl HiveDb {
         let label_store = LabelStore::open(&label_store_path)?;
         let node_free_list = FreeList::open(&node_free_list_path)?;
         let edge_free_list = FreeList::open(&edge_free_list_path)?;
+        let wal = Wal::open(&wal_path)?;
         let index_store = IndexStore::load_or_rebuild(
             &index_path,
             &mut node_store,
@@ -126,7 +130,29 @@ impl HiveDb {
             edge_free_list,
             index_path,
             index_store,
+            wal,
         })
+    }
+
+    fn append_wal(&mut self, entry: &WalEntry) -> Result<(), DbError> {
+        self.wal.append(entry)?;
+        self.wal.sync()
+    }
+
+    fn properties_to_wal(properties: &[Property]) -> Result<Vec<WalProperty>, DbError> {
+        properties
+            .iter()
+            .map(|property| {
+                if property.value_type == LONG_STRING {
+                    return Err(DbError::WriteError);
+                }
+
+                Ok(WalProperty {
+                    key: property.key_value.clone(),
+                    value: Value::from_bytes(property.value_type, property.value_inline),
+                })
+            })
+            .collect()
     }
 
     fn persist_indexes(&self) -> Result<(), DbError> {
@@ -157,11 +183,22 @@ impl HiveDb {
     /// Reuses a freed node ID from the free list when available.
     /// Returns the new node's ID.
     pub fn create_node(&mut self, label: &str, props: Vec<Property>) -> Result<NodeId, DbError> {
+        let wal_props = Self::properties_to_wal(&props)?;
+        let wal_entry = WalEntry::CreateNode {
+            node_id: match self.node_free_list.peek() {
+                Some(id) => id,
+                None => self.node_store.count()?,
+            },
+            label: label.to_string(),
+            properties: wal_props,
+        };
+        self.append_wal(&wal_entry)?;
+
         let prop_count = props.len() as u64;
         let label_id = self.label_store.get_or_create(label)?;
-        let node_id = match self.node_free_list.pop() {
-            Some(id) => id,
-            None => self.node_store.count()?,
+        let node_id = match wal_entry {
+            WalEntry::CreateNode { node_id, .. } => node_id,
+            _ => unreachable!(),
         };
 
         let mut first_property = NIL_ID;
@@ -221,11 +258,24 @@ impl HiveDb {
         label: &str,
         props: Vec<Property>,
     ) -> Result<EdgeId, DbError> {
+        let wal_props = Self::properties_to_wal(&props)?;
+        let wal_entry = WalEntry::CreateEdge {
+            edge_id: match self.edge_free_list.peek() {
+                Some(id) => id,
+                None => self.edge_store.count()?,
+            },
+            src,
+            dst,
+            label: label.to_string(),
+            properties: wal_props,
+        };
+        self.append_wal(&wal_entry)?;
+
         let prop_count = props.len() as u64;
         let label_id = self.label_store.get_or_create(label)?;
-        let edge_id = match self.edge_free_list.pop() {
-            Some(id) => id,
-            None => self.edge_store.count()?,
+        let edge_id = match wal_entry {
+            WalEntry::CreateEdge { edge_id, .. } => edge_id,
+            _ => unreachable!(),
         };
 
         let mut first_property = NIL_ID;
@@ -368,6 +418,12 @@ impl HiveDb {
         key: &str,
         value: Value,
     ) -> Result<(), DbError> {
+        self.append_wal(&WalEntry::UpdateNode {
+            node_id,
+            key: key.to_string(),
+            value: value.clone(),
+        })?;
+
         let node = self.node_store.read(node_id)?;
         let key_hash = value::hash_key(key);
         let key_offset = self.string_store.append(key)?;
@@ -468,6 +524,12 @@ impl HiveDb {
         key: &str,
         value: Value,
     ) -> Result<(), DbError> {
+        self.append_wal(&WalEntry::UpdateEdge {
+            edge_id,
+            key: key.to_string(),
+            value: value.clone(),
+        })?;
+
         let edge = self.edge_store.read(edge_id)?;
         let key_hash = value::hash_key(key);
         let key_offset = self.string_store.append(key)?;
@@ -556,6 +618,8 @@ impl HiveDb {
     /// Marks a node as deleted (sets the DELETED flag) and adds its ID to the free list.
     /// Idempotent: if the node is already deleted, counts are not decremented again.
     pub fn delete_node(&mut self, id: u64) -> Result<u64, DbError> {
+        self.append_wal(&WalEntry::DeleteNode { node_id: id })?;
+
         let mut record = self.node_store.read(id)?;
         let was_deleted = (record.flags & DELETED) != 0;
         if !was_deleted {
@@ -580,6 +644,8 @@ impl HiveDb {
     /// Marks an edge as deleted, unlinks it from source and destination node chains,
     /// and adds its ID to the free list. Idempotent on already-deleted edges.
     pub fn delete_edge(&mut self, id: u64) -> Result<u64, DbError> {
+        self.append_wal(&WalEntry::DeleteEdge { edge_id: id })?;
+
         let mut record = self.edge_store.read(id)?;
         let was_deleted = (record.flags & DELETED) != 0;
         if !was_deleted {
