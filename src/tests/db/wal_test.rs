@@ -1,6 +1,7 @@
 use super::super::utils::utils::{cleanup_dir, temp_dir};
 use crate::db::hive_db::HiveDb;
 use crate::db::store_path::WAL_FILE;
+use crate::types::DELETED;
 use crate::value::Value;
 use crate::wal::{Wal, WalEntry, WalProperty};
 use std::fs;
@@ -291,18 +292,126 @@ fn hive_db_reopen_truncates_checkpointed_wal() {
 }
 
 #[test]
-fn hive_db_open_keeps_dirty_wal() {
-    let dir = temp_dir("hive_db_open_keeps_dirty_wal");
+fn hive_db_open_replays_dirty_create_node_wal() {
+    let dir = temp_dir("hive_db_open_replays_dirty_create_node_wal");
+
+    {
+        let _db = HiveDb::open(&dir).unwrap();
+    }
 
     {
         let mut wal = Wal::open(&dir.join(WAL_FILE)).unwrap();
-        wal.append(&WalEntry::DeleteNode { node_id: 9 }).unwrap();
+        wal.append(&WalEntry::CreateNode {
+            node_id: 0,
+            label: "Person".to_string(),
+            properties: vec![WalProperty {
+                key: "name".to_string(),
+                value: Value::String("Alice".to_string()),
+            }],
+        })
+        .unwrap();
     }
 
-    let _db = HiveDb::open(&dir).unwrap();
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        let node = db.get_node(0).unwrap();
+        assert_eq!(node.label, "Person");
+        assert_eq!(node.properties.len(), 1);
+        assert_eq!(node.properties[0].key_value, "name");
+        assert_eq!(
+            Value::from_bytes(node.properties[0].value_type, node.properties[0].value_inline),
+            Value::String("Alice".to_string())
+        );
+    }
 
-    let mut wal = Wal::open(&dir.join(WAL_FILE)).unwrap();
-    assert_eq!(wal.read_all().unwrap(), vec![WalEntry::DeleteNode { node_id: 9 }]);
+    let metadata = fs::metadata(dir.join(WAL_FILE)).unwrap();
+    assert_eq!(metadata.len(), 0);
+
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn hive_db_open_replays_dirty_edge_create_and_update_wal() {
+    let dir = temp_dir("hive_db_open_replays_dirty_edge_create_and_update_wal");
+
+    let (src, dst) = {
+        let mut db = HiveDb::open(&dir).unwrap();
+        let src = db.create_node("A", vec![]).unwrap();
+        let dst = db.create_node("B", vec![]).unwrap();
+        (src, dst)
+    };
+
+    {
+        let _db = HiveDb::open(&dir).unwrap();
+    }
+
+    {
+        let mut wal = Wal::open(&dir.join(WAL_FILE)).unwrap();
+        wal.append(&WalEntry::CreateEdge {
+            edge_id: 0,
+            src,
+            dst,
+            label: "KNOWS".to_string(),
+            properties: vec![],
+        })
+        .unwrap();
+        wal.append(&WalEntry::UpdateEdge {
+            edge_id: 0,
+            key: "since".to_string(),
+            value: Value::Integer(2020),
+        })
+        .unwrap();
+    }
+
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        let edge = db.get_edge(0).unwrap();
+        assert_eq!(edge.src, src);
+        assert_eq!(edge.dst, dst);
+        assert_eq!(db.get_edge_property(0, "since").unwrap(), Some(Value::Integer(2020)));
+        assert_eq!(db.get_out_neighbors(src).unwrap(), vec![dst]);
+        assert_eq!(db.get_in_neighbors(dst).unwrap(), vec![src]);
+    }
+
+    let metadata = fs::metadata(dir.join(WAL_FILE)).unwrap();
+    assert_eq!(metadata.len(), 0);
+
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn hive_db_open_replays_dirty_delete_wal() {
+    let dir = temp_dir("hive_db_open_replays_dirty_delete_wal");
+
+    let (node_id, edge_id) = {
+        let mut db = HiveDb::open(&dir).unwrap();
+        let src = db.create_node("A", vec![]).unwrap();
+        let dst = db.create_node("B", vec![]).unwrap();
+        let edge_id = db.create_edge(src, dst, "KNOWS", vec![]).unwrap();
+        (src, edge_id)
+    };
+
+    {
+        let _db = HiveDb::open(&dir).unwrap();
+    }
+
+    {
+        let mut wal = Wal::open(&dir.join(WAL_FILE)).unwrap();
+        wal.append(&WalEntry::DeleteEdge { edge_id }).unwrap();
+        wal.append(&WalEntry::DeleteNode { node_id }).unwrap();
+    }
+
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        let node = db.get_node(node_id).unwrap();
+        let edge = db.get_edge(edge_id).unwrap();
+        assert_ne!(node.flags & DELETED, 0);
+        assert_ne!(edge.flags & DELETED, 0);
+        assert!(db.get_out_neighbors(node_id).unwrap().is_empty());
+    }
+
+    let metadata = fs::metadata(dir.join(WAL_FILE)).unwrap();
+    assert_eq!(metadata.len(), 0);
 
     cleanup_dir(&dir);
 }

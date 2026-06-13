@@ -102,27 +102,18 @@ impl HiveDb {
         let node_free_list_path = path.join(FREE_LIST_NODE);
         let edge_free_list_path = path.join(FREE_LIST_EDGE);
 
-        let mut node_store = NodeStore::open(&node_store_path)?;
-        let mut edge_store = EdgeStore::open(&edge_store_path)?;
-        let mut property_store = PropertyStore::open(&prop_store_path)?;
-        let mut string_store = StringStore::open(&string_store_path)?;
+        let node_store = NodeStore::open(&node_store_path)?;
+        let edge_store = EdgeStore::open(&edge_store_path)?;
+        let property_store = PropertyStore::open(&prop_store_path)?;
+        let string_store = StringStore::open(&string_store_path)?;
         let label_store = LabelStore::open(&label_store_path)?;
         let node_free_list = FreeList::open(&node_free_list_path)?;
         let edge_free_list = FreeList::open(&edge_free_list_path)?;
         let mut wal = Wal::open(&wal_path)?;
         let wal_entries = wal.read_all()?;
-        if matches!(wal_entries.last(), None | Some(WalEntry::Checkpoint)) {
-            wal.truncate()?;
-        }
-        let index_store = IndexStore::load_or_rebuild(
-            &index_path,
-            &mut node_store,
-            &mut edge_store,
-            &mut property_store,
-            &mut string_store,
-        )?;
+        let recovery_entries = Self::recovery_entries(&wal_entries);
 
-        Ok(Self {
+        let mut db = Self {
             header,
             meta_path,
             node_store,
@@ -133,9 +124,26 @@ impl HiveDb {
             node_free_list,
             edge_free_list,
             index_path,
-            index_store,
+            index_store: IndexStore::default(),
             wal,
-        })
+        };
+
+        if recovery_entries.is_empty() {
+            db.wal.truncate()?;
+            db.index_store = IndexStore::load_or_rebuild(
+                &db.index_path,
+                &mut db.node_store,
+                &mut db.edge_store,
+                &mut db.property_store,
+                &mut db.string_store,
+            )?;
+            return Ok(db);
+        }
+
+        db.replay_wal_entries(&recovery_entries)?;
+        db.finalize_recovery()?;
+
+        Ok(db)
     }
 
     fn append_wal(&mut self, entry: &WalEntry) -> Result<(), DbError> {
@@ -145,6 +153,15 @@ impl HiveDb {
 
     fn checkpoint_wal(&mut self) -> Result<(), DbError> {
         self.append_wal(&WalEntry::Checkpoint)
+    }
+
+    fn recovery_entries(entries: &[WalEntry]) -> Vec<WalEntry> {
+        let start = entries
+            .iter()
+            .rposition(|entry| matches!(entry, WalEntry::Checkpoint))
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+        entries[start..].to_vec()
     }
 
     fn properties_to_wal(properties: &[Property]) -> Result<Vec<WalProperty>, DbError> {
@@ -165,6 +182,255 @@ impl HiveDb {
 
     fn persist_indexes(&self) -> Result<(), DbError> {
         self.index_store.save(&self.index_path)
+    }
+
+    fn record_exists(count: u64, id: u64) -> bool {
+        id < count
+    }
+
+    fn append_property_chain(&mut self, properties: &[WalProperty]) -> Result<u64, DbError> {
+        let mut first_property = NIL_ID;
+        let mut prev_property = NIL_ID;
+
+        for property in properties {
+            let prop_id = self.property_store.count()?;
+            let mut record = PropertyRecord::new(prop_id);
+            let (value_type, mut value_inline) = property.value.to_inline_bytes();
+
+            record.key_hash = value::hash_key(&property.key);
+            record.key_offset = self.string_store.append(&property.key)?;
+            record.value_type = value_type;
+
+            if value_type == LONG_STRING {
+                if let Value::String(ref s) = property.value {
+                    let offset = self.string_store.append(s)?;
+                    value_inline[..8].copy_from_slice(&offset.to_le_bytes());
+                }
+            }
+
+            record.value_inline = value_inline;
+
+            self.property_store.append(record)?;
+
+            if first_property == NIL_ID {
+                first_property = prop_id;
+            }
+
+            if prev_property != NIL_ID {
+                let mut prev = self.property_store.read(prev_property)?;
+                prev.next_property = prop_id;
+                self.property_store.update(prev_property, prev)?;
+            }
+
+            prev_property = prop_id;
+        }
+
+        Ok(first_property)
+    }
+
+    fn replay_wal_entries(&mut self, entries: &[WalEntry]) -> Result<(), DbError> {
+        for entry in entries {
+            match entry {
+                WalEntry::CreateNode {
+                    node_id,
+                    label,
+                    properties,
+                } => self.apply_recovered_create_node(*node_id, label, properties)?,
+                WalEntry::CreateEdge {
+                    edge_id,
+                    src,
+                    dst,
+                    label,
+                    properties,
+                } => self.apply_recovered_create_edge(*edge_id, *src, *dst, label, properties)?,
+                WalEntry::UpdateNode {
+                    node_id,
+                    key,
+                    value,
+                } => self.apply_recovered_update_node(*node_id, key, value.clone())?,
+                WalEntry::UpdateEdge {
+                    edge_id,
+                    key,
+                    value,
+                } => self.apply_recovered_update_edge(*edge_id, key, value.clone())?,
+                WalEntry::DeleteNode { node_id } => self.apply_recovered_delete_node(*node_id)?,
+                WalEntry::DeleteEdge { edge_id } => self.apply_recovered_delete_edge(*edge_id)?,
+                WalEntry::Checkpoint => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    fn apply_recovered_create_node(
+        &mut self,
+        node_id: NodeId,
+        label: &str,
+        properties: &[WalProperty],
+    ) -> Result<(), DbError> {
+        let label_id = self.label_store.get_or_create(label)?;
+        let first_property = self.append_property_chain(properties)?;
+        let mut node_record = NodeRecord::new(node_id);
+        node_record.label_id = label_id;
+        node_record.first_property = first_property;
+
+        let node_count = self.node_store.count()?;
+        if Self::record_exists(node_count, node_id) {
+            self.node_store.update(node_id, node_record)?;
+        } else if node_id == node_count {
+            self.node_store.append(node_record)?;
+        } else {
+            return Err(DbError::WriteError);
+        }
+
+        Ok(())
+    }
+
+    fn apply_recovered_create_edge(
+        &mut self,
+        edge_id: EdgeId,
+        src: NodeId,
+        dst: NodeId,
+        label: &str,
+        properties: &[WalProperty],
+    ) -> Result<(), DbError> {
+        let label_id = self.label_store.get_or_create(label)?;
+        let first_property = self.append_property_chain(properties)?;
+        let mut edge_record = EdgeRecord::new(edge_id);
+        edge_record.label_id = label_id;
+        edge_record.src = src;
+        edge_record.dst = dst;
+        edge_record.first_property = first_property;
+
+        let edge_count = self.edge_store.count()?;
+        if Self::record_exists(edge_count, edge_id) {
+            self.edge_store.update(edge_id, edge_record)?;
+        } else if edge_id == edge_count {
+            self.edge_store.append(edge_record)?;
+        } else {
+            return Err(DbError::WriteError);
+        }
+
+        Ok(())
+    }
+
+    fn apply_recovered_update_node(
+        &mut self,
+        node_id: NodeId,
+        key: &str,
+        value: Value,
+    ) -> Result<(), DbError> {
+        self.set_node_property_internal(node_id, key, value)
+    }
+
+    fn apply_recovered_update_edge(
+        &mut self,
+        edge_id: EdgeId,
+        key: &str,
+        value: Value,
+    ) -> Result<(), DbError> {
+        self.set_edge_property_internal(edge_id, key, value)
+    }
+
+    fn apply_recovered_delete_node(&mut self, node_id: NodeId) -> Result<(), DbError> {
+        let mut record = self.node_store.read(node_id)?;
+        record.flags |= DELETED;
+        self.node_store.update(node_id, record)
+    }
+
+    fn apply_recovered_delete_edge(&mut self, edge_id: EdgeId) -> Result<(), DbError> {
+        let mut record = self.edge_store.read(edge_id)?;
+        record.flags |= DELETED;
+        self.edge_store.update(edge_id, record)
+    }
+
+    fn rebuild_edge_links(&mut self) -> Result<(), DbError> {
+        let node_count = self.node_store.count()?;
+        for node_id in 0..node_count {
+            let mut node = self.node_store.read(node_id)?;
+            node.first_out_edge = NIL_ID;
+            node.first_in_edge = NIL_ID;
+            self.node_store.update(node_id, node)?;
+        }
+
+        let edge_count = self.edge_store.count()?;
+        for edge_id in 0..edge_count {
+            let mut edge = self.edge_store.read(edge_id)?;
+            if (edge.flags & DELETED) != 0 {
+                edge.next_out_edge = NIL_ID;
+                edge.next_in_edge = NIL_ID;
+                self.edge_store.update(edge_id, edge)?;
+                continue;
+            }
+
+            let mut src_node = self.node_store.read(edge.src)?;
+            let mut dst_node = self.node_store.read(edge.dst)?;
+
+            edge.next_out_edge = src_node.first_out_edge;
+            edge.next_in_edge = dst_node.first_in_edge;
+            src_node.first_out_edge = edge_id;
+            dst_node.first_in_edge = edge_id;
+
+            self.edge_store.update(edge_id, edge)?;
+            self.node_store.update(edge.src, src_node)?;
+            self.node_store.update(edge.dst, dst_node)?;
+        }
+
+        Ok(())
+    }
+
+    fn rebuild_header_and_free_lists(&mut self) -> Result<(), DbError> {
+        let mut live_nodes = 0;
+        let mut live_edges = 0;
+        let mut free_nodes = Vec::new();
+        let mut free_edges = Vec::new();
+
+        let node_count = self.node_store.count()?;
+        for node_id in 0..node_count {
+            let node = self.node_store.read(node_id)?;
+            if (node.flags & DELETED) != 0 {
+                free_nodes.push(node_id);
+            } else {
+                live_nodes += 1;
+            }
+        }
+
+        let edge_count = self.edge_store.count()?;
+        for edge_id in 0..edge_count {
+            let edge = self.edge_store.read(edge_id)?;
+            if (edge.flags & DELETED) != 0 {
+                free_edges.push(edge_id);
+            } else {
+                live_edges += 1;
+            }
+        }
+
+        self.header.node_count = live_nodes;
+        self.header.edge_count = live_edges;
+        self.header.property_count = self.property_store.count()?;
+        self.header.free_node_head = free_nodes.last().copied().unwrap_or(0);
+        self.header.free_edge_head = free_edges.last().copied().unwrap_or(0);
+        self.node_free_list.replace(free_nodes)?;
+        self.edge_free_list.replace(free_edges)?;
+        self.flush_header()
+    }
+
+    fn rebuild_indexes(&mut self) -> Result<(), DbError> {
+        self.index_store = IndexStore::rebuild(
+            &mut self.node_store,
+            &mut self.edge_store,
+            &mut self.property_store,
+            &mut self.string_store,
+        )?;
+        self.persist_indexes()
+    }
+
+    fn finalize_recovery(&mut self) -> Result<(), DbError> {
+        self.rebuild_edge_links()?;
+        self.rebuild_header_and_free_lists()?;
+        self.rebuild_indexes()?;
+        self.checkpoint_wal()?;
+        self.wal.truncate()
     }
 
     /// Writes the current in-memory header to the meta file.
@@ -322,17 +588,24 @@ impl HiveDb {
         edge_record.src = src;
         edge_record.first_property = first_property;
 
+        let existing_edge_count = self.edge_store.count()?;
+        if edge_id == existing_edge_count {
+            self.edge_store.append(edge_record)?;
+        } else {
+            self.edge_store.update(edge_id, edge_record)?;
+        }
+
         let mut src_node = self.node_store.read(src)?;
         edge_record.next_out_edge = src_node.first_out_edge;
         src_node.first_out_edge = edge_id;
-        self.node_store.update(src, src_node)?;
 
         let mut dst_node = self.node_store.read(dst)?;
         edge_record.next_in_edge = dst_node.first_in_edge;
         dst_node.first_in_edge = edge_id;
-        self.node_store.update(dst, dst_node)?;
 
-        self.edge_store.append(edge_record)?;
+        self.edge_store.update(edge_id, edge_record)?;
+        self.node_store.update(src, src_node)?;
+        self.node_store.update(dst, dst_node)?;
 
         self.header.edge_count += 1;
         self.header.property_count += prop_count;
@@ -434,6 +707,18 @@ impl HiveDb {
             value: value.clone(),
         })?;
 
+        self.set_node_property_internal(node_id, key, value)?;
+        self.checkpoint_wal()?;
+        Ok(())
+    }
+
+    fn set_node_property_internal(
+        &mut self,
+        node_id: NodeId,
+        key: &str,
+        value: Value,
+    ) -> Result<(), DbError> {
+
         let node = self.node_store.read(node_id)?;
         let key_hash = value::hash_key(key);
         let key_offset = self.string_store.append(key)?;
@@ -460,7 +745,6 @@ impl HiveDb {
                 self.index_store
                     .upsert_node_property(node_id, key_hash, old_value.as_ref(), &value);
                 self.persist_indexes()?;
-                self.checkpoint_wal()?;
                 return Ok(());
             }
             curr = prop.next_property;
@@ -472,6 +756,8 @@ impl HiveDb {
         record.key_offset = key_offset;
         record.value_type = value_type;
         record.value_inline = value_inline;
+
+        self.property_store.append(record)?;
 
         if node.first_property == NIL_ID {
             let mut node = node;
@@ -491,13 +777,11 @@ impl HiveDb {
             self.property_store.update(tail, last)?;
         }
 
-        self.property_store.append(record)?;
         self.header.property_count += 1;
         self.flush_header()?;
         self.index_store
             .upsert_node_property(node_id, key_hash, old_value.as_ref(), &value);
         self.persist_indexes()?;
-        self.checkpoint_wal()?;
         Ok(())
     }
 
@@ -542,6 +826,18 @@ impl HiveDb {
             value: value.clone(),
         })?;
 
+        self.set_edge_property_internal(edge_id, key, value)?;
+        self.checkpoint_wal()?;
+        Ok(())
+    }
+
+    fn set_edge_property_internal(
+        &mut self,
+        edge_id: EdgeId,
+        key: &str,
+        value: Value,
+    ) -> Result<(), DbError> {
+
         let edge = self.edge_store.read(edge_id)?;
         let key_hash = value::hash_key(key);
         let key_offset = self.string_store.append(key)?;
@@ -564,7 +860,6 @@ impl HiveDb {
                 updated.value_inline = value_inline;
                 updated.key_offset = key_offset;
                 self.property_store.update(curr, updated)?;
-                self.checkpoint_wal()?;
                 return Ok(());
             }
             curr = prop.next_property;
@@ -576,6 +871,8 @@ impl HiveDb {
         record.key_offset = key_offset;
         record.value_type = value_type;
         record.value_inline = value_inline;
+
+        self.property_store.append(record)?;
 
         if edge.first_property == NIL_ID {
             let mut edge = edge;
@@ -595,10 +892,8 @@ impl HiveDb {
             self.property_store.update(tail, last)?;
         }
 
-        self.property_store.append(record)?;
         self.header.property_count += 1;
         self.flush_header()?;
-        self.checkpoint_wal()?;
         Ok(())
     }
 

@@ -58,6 +58,12 @@ impl FreeList {
         self.flush()
     }
 
+    /// Replaces the in-memory free list contents and flushes them to disk.
+    pub fn replace(&mut self, ids: Vec<u64>) -> Result<(), DbError> {
+        self.freed = ids;
+        self.flush()
+    }
+
     /// Writes the entire in-memory free list to disk, truncating the file first.
     pub fn flush(&mut self) -> Result<(), DbError> {
         self.file.set_len(0).map_err(|_| DbError::WriteError)?;
