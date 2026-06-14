@@ -16,6 +16,7 @@ pub enum WalEntryType {
     DeleteNode = 5,
     DeleteEdge = 6,
     Checkpoint = 7,
+    Transaction = 8,
 }
 
 impl WalEntryType {
@@ -28,6 +29,7 @@ impl WalEntryType {
             5 => Ok(Self::DeleteNode),
             6 => Ok(Self::DeleteEdge),
             7 => Ok(Self::Checkpoint),
+            8 => Ok(Self::Transaction),
             _ => Err(DbError::ReadError),
         }
     }
@@ -70,6 +72,9 @@ pub enum WalEntry {
         edge_id: EdgeId,
     },
     Checkpoint,
+    Transaction {
+        entries: Vec<WalEntry>,
+    },
 }
 
 impl WalEntry {
@@ -82,6 +87,7 @@ impl WalEntry {
             Self::DeleteNode { .. } => WalEntryType::DeleteNode,
             Self::DeleteEdge { .. } => WalEntryType::DeleteEdge,
             Self::Checkpoint => WalEntryType::Checkpoint,
+            Self::Transaction { .. } => WalEntryType::Transaction,
         }
     }
 
@@ -132,6 +138,7 @@ impl WalEntry {
             Self::DeleteNode { node_id } => write_u64(&mut buf, *node_id)?,
             Self::DeleteEdge { edge_id } => write_u64(&mut buf, *edge_id)?,
             Self::Checkpoint => {}
+            Self::Transaction { entries } => write_entries(&mut buf, entries)?,
         }
 
         Ok(buf)
@@ -170,6 +177,9 @@ impl WalEntry {
                 edge_id: read_u64(&mut cursor)?,
             }),
             WalEntryType::Checkpoint => Ok(Self::Checkpoint),
+            WalEntryType::Transaction => Ok(Self::Transaction {
+                entries: read_entries(&mut cursor)?,
+            }),
         }
     }
 }
@@ -396,6 +406,18 @@ fn write_properties(buf: &mut Vec<u8>, properties: &[WalProperty]) -> Result<(),
     Ok(())
 }
 
+fn write_entries(buf: &mut Vec<u8>, entries: &[WalEntry]) -> Result<(), DbError> {
+    write_u32(buf, entries.len() as u32)?;
+    for entry in entries {
+        let entry_type = entry.entry_type() as u8;
+        let payload = entry.encode_payload()?;
+        write_u8(buf, entry_type)?;
+        write_u32(buf, payload.len() as u32)?;
+        buf.write_all(&payload).map_err(|_| DbError::WriteError)?;
+    }
+    Ok(())
+}
+
 fn read_properties<R: Read>(reader: &mut R) -> Result<Vec<WalProperty>, DbError> {
     let count = read_u32(reader)? as usize;
     let mut properties = Vec::with_capacity(count);
@@ -408,6 +430,23 @@ fn read_properties<R: Read>(reader: &mut R) -> Result<Vec<WalProperty>, DbError>
     }
 
     Ok(properties)
+}
+
+fn read_entries<R: Read>(reader: &mut R) -> Result<Vec<WalEntry>, DbError> {
+    let count = read_u32(reader)? as usize;
+    let mut entries = Vec::with_capacity(count);
+
+    for _ in 0..count {
+        let entry_type = read_u8(reader)?;
+        let payload_len = read_u32(reader)? as usize;
+        let mut payload = vec![0u8; payload_len];
+        reader
+            .read_exact(&mut payload)
+            .map_err(|_| DbError::ReadError)?;
+        entries.push(WalEntry::decode(entry_type, &payload)?);
+    }
+
+    Ok(entries)
 }
 
 fn crc32_for_entry(entry_type: u8, payload: &[u8]) -> u32 {

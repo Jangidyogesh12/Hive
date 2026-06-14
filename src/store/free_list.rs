@@ -52,6 +52,11 @@ impl FreeList {
         self.freed.last().copied()
     }
 
+    /// Returns a snapshot of the current free IDs in LIFO order.
+    pub fn snapshot(&self) -> Vec<u64> {
+        self.freed.clone()
+    }
+
     /// Pushes a freed ID onto the list and flushes to disk.
     pub fn push(&mut self, id: u64) -> Result<(), DbError> {
         self.freed.push(id);

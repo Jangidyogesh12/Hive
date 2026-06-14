@@ -16,6 +16,7 @@ use crate::store::property::store::PropertyStore;
 use crate::store::string_store::StringStore;
 use crate::types::DELETED;
 use crate::types::{EdgeId, NIL_ID, NodeId};
+use crate::transaction::Transaction;
 use crate::value::{self, LONG_STRING, Value};
 use crate::wal::{Wal, WalEntry, WalProperty};
 use std::path::PathBuf;
@@ -155,6 +156,10 @@ impl HiveDb {
         self.append_wal(&WalEntry::Checkpoint)
     }
 
+    pub(crate) fn append_transaction_wal(&mut self, entries: Vec<WalEntry>) -> Result<(), DbError> {
+        self.append_wal(&WalEntry::Transaction { entries })
+    }
+
     fn recovery_entries(entries: &[WalEntry]) -> Vec<WalEntry> {
         let start = entries
             .iter()
@@ -164,7 +169,7 @@ impl HiveDb {
         entries[start..].to_vec()
     }
 
-    fn properties_to_wal(properties: &[Property]) -> Result<Vec<WalProperty>, DbError> {
+    pub(crate) fn properties_to_wal(properties: &[Property]) -> Result<Vec<WalProperty>, DbError> {
         properties
             .iter()
             .map(|property| {
@@ -256,6 +261,7 @@ impl HiveDb {
                 WalEntry::DeleteNode { node_id } => self.apply_recovered_delete_node(*node_id)?,
                 WalEntry::DeleteEdge { edge_id } => self.apply_recovered_delete_edge(*edge_id)?,
                 WalEntry::Checkpoint => {}
+                WalEntry::Transaction { entries } => self.replay_wal_entries(entries)?,
             }
         }
 
@@ -433,6 +439,23 @@ impl HiveDb {
         self.wal.truncate()
     }
 
+    pub(crate) fn commit_transaction_entries(&mut self, entries: Vec<WalEntry>) -> Result<(), DbError> {
+        self.append_transaction_wal(entries.clone())?;
+        self.replay_wal_entries(&entries)?;
+        self.rebuild_edge_links()?;
+        self.rebuild_header_and_free_lists()?;
+        self.rebuild_indexes()?;
+        self.checkpoint_wal()
+    }
+
+    pub(crate) fn node_free_ids_snapshot(&self) -> Vec<u64> {
+        self.node_free_list.snapshot()
+    }
+
+    pub(crate) fn edge_free_ids_snapshot(&self) -> Vec<u64> {
+        self.edge_free_list.snapshot()
+    }
+
     /// Writes the current in-memory header to the meta file.
     fn flush_header(&mut self) -> Result<(), DbError> {
         header::write_header(&self.meta_path, self.header)
@@ -441,6 +464,10 @@ impl HiveDb {
     /// Closes the database, writing the final header state to disk.
     pub fn close(self) {
         let _ = header::write_header(&self.meta_path, self.header);
+    }
+
+    pub fn begin(&mut self) -> Result<Transaction<'_>, DbError> {
+        Transaction::new(self)
     }
 
     /// Returns the total number of node records (including deleted) in the store.

@@ -5,4 +5,5 @@ mod index_test;
 mod neighbors_test;
 mod node_test;
 mod property_test;
+mod transaction_test;
 mod wal_test;
