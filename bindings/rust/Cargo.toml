@@ -1,0 +1,23 @@
+[package]
+name = "hive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Hive Rust API"
+
+[lib]
+name = "hive"
+path = "src/lib.rs"
+
+[dependencies]
+hive_core = { workspace = true }
+
+[[example]]
+name = "social_graph"
+path = "../../examples/social_graph.rs"
+
+[[example]]
+name = "knowledge_graph"
+path = "../../examples/knowledge_graph.rs"

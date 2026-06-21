@@ -1,0 +1,16 @@
+[package]
+name = "hive_cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The Hive interactive graph shell"
+
+[[bin]]
+name = "hive"
+path = "main.rs"
+
+[dependencies]
+hive_core = { workspace = true }
+rustyline = { workspace = true }
