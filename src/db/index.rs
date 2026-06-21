@@ -10,7 +10,7 @@ use crate::types::{DELETED, EdgeId, NIL_ID, NodeId};
 use crate::value::{BOOLEAN, FLOAT, INTEGER, LONG_STRING, NULL, STRING, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
-use std::io::{Read, Write};
+use std::io::{BufWriter, Read, Write};
 use std::path::Path;
 
 const INDEX_MAGIC: [u8; 8] = *b"HIVEIDX1";
@@ -123,12 +123,13 @@ impl IndexStore {
     }
 
     pub fn save(&self, index_path: &Path) -> Result<(), DbError> {
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .create(true)
             .truncate(true)
             .write(true)
             .open(index_path)
             .map_err(|_| DbError::FileOpenError)?;
+        let mut file = BufWriter::new(file);
 
         file.write_all(&INDEX_MAGIC)
             .map_err(|_| DbError::WriteError)?;
@@ -163,6 +164,7 @@ impl IndexStore {
         }
 
         file.flush().map_err(|_| DbError::WriteError)?;
+        file.get_ref().sync_all().map_err(DbError::Io)?;
         Ok(())
     }
 

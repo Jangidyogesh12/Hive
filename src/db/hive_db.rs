@@ -153,6 +153,7 @@ impl HiveDb {
     }
 
     fn checkpoint_wal(&mut self) -> Result<(), DbError> {
+        self.persist_buffered_state()?;
         self.append_wal(&WalEntry::Checkpoint)
     }
 
@@ -187,6 +188,29 @@ impl HiveDb {
 
     fn persist_indexes(&self) -> Result<(), DbError> {
         self.index_store.save(&self.index_path)
+    }
+
+    fn flush_store_buffers(&mut self) -> Result<(), DbError> {
+        self.node_store.flush()?;
+        self.edge_store.flush()?;
+        self.property_store.flush()?;
+        self.string_store.flush()?;
+        self.label_store.flush()?;
+        self.node_free_list.flush()?;
+        self.edge_free_list.flush()?;
+        Ok(())
+    }
+
+    fn persist_buffered_state(&mut self) -> Result<(), DbError> {
+        self.flush_store_buffers()?;
+        self.node_store.sync()?;
+        self.edge_store.sync()?;
+        self.property_store.sync()?;
+        self.string_store.sync()?;
+        self.label_store.sync()?;
+        self.node_free_list.persist()?;
+        self.edge_free_list.persist()?;
+        Ok(())
     }
 
     fn record_exists(count: u64, id: u64) -> bool {
@@ -462,7 +486,8 @@ impl HiveDb {
     }
 
     /// Closes the database, writing the final header state to disk.
-    pub fn close(self) {
+    pub fn close(mut self) {
+        let _ = self.persist_buffered_state();
         let _ = header::write_header(&self.meta_path, self.header);
     }
 

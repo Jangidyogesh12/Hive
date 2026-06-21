@@ -1,25 +1,30 @@
 use std::fs::OpenOptions;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use crate::errors::DbError;
 
 pub struct FreeList {
     freed: Vec<u64>,
-    file: std::fs::File,
+    writer: BufWriter<std::fs::File>,
 }
 
 impl FreeList {
     /// Opens the free list file at `path`, loading any previously freed IDs.
     pub fn open(path: &Path) -> Result<Self, DbError> {
-        let mut file = OpenOptions::new()
+        let mut reader = OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
             .open(path)
             .map_err(|_| DbError::FileOpenError)?;
+        let writer_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(path)
+            .map_err(|_| DbError::FileOpenError)?;
 
-        let len = file
+        let len = reader
             .seek(SeekFrom::End(0))
             .map_err(|_| DbError::SeekError)?;
 
@@ -27,17 +32,23 @@ impl FreeList {
         let mut freed = Vec::with_capacity(count as usize);
 
         if count > 0 {
-            file.seek(SeekFrom::Start(0))
+            reader
+                .seek(SeekFrom::Start(0))
                 .map_err(|_| DbError::SeekError)?;
 
             for _ in 0..count {
                 let mut buf = [0u8; 8];
-                file.read_exact(&mut buf).map_err(|_| DbError::ReadError)?;
+                reader
+                    .read_exact(&mut buf)
+                    .map_err(|_| DbError::ReadError)?;
                 freed.push(u64::from_le_bytes(buf));
             }
         }
 
-        Ok(Self { freed, file })
+        Ok(Self {
+            freed,
+            writer: BufWriter::new(writer_file),
+        })
     }
 
     /// Pops the most recently freed ID for reuse, flushing the list to disk.
@@ -71,19 +82,22 @@ impl FreeList {
 
     /// Writes the entire in-memory free list to disk, truncating the file first.
     pub fn flush(&mut self) -> Result<(), DbError> {
-        self.file.set_len(0).map_err(|_| DbError::WriteError)?;
+        self.writer.flush().map_err(|_| DbError::WriteError)?;
+        self.writer
+            .get_mut()
+            .set_len(0)
+            .map_err(|_| DbError::WriteError)?;
 
-        self.file
+        self.writer
             .seek(SeekFrom::Start(0))
             .map_err(|_| DbError::SeekError)?;
 
         for id in &self.freed {
-            self.file
+            self.writer
                 .write_all(&id.to_le_bytes())
                 .map_err(|_| DbError::WriteError)?;
         }
-
-        self.file.flush().map_err(|_| DbError::WriteError)?;
+        self.writer.flush().map_err(|_| DbError::WriteError)?;
         Ok(())
     }
 
@@ -95,5 +109,13 @@ impl FreeList {
     /// Returns true if there are no freed IDs available.
     pub fn is_empty(&self) -> bool {
         self.freed.is_empty()
+    }
+
+    pub fn persist(&mut self) -> Result<(), DbError> {
+        self.flush()?;
+        self.writer
+            .get_ref()
+            .sync_all()
+            .map_err(DbError::Io)
     }
 }

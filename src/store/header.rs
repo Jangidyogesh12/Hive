@@ -1,5 +1,5 @@
 use std::fs::OpenOptions;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use crate::errors::DbError;
@@ -94,18 +94,22 @@ pub fn read_header(path: &Path) -> Result<DbHeader, DbError> {
 
 /// Writes a `DbHeader` to the given meta file, creating it if necessary.
 pub fn write_header(path: &Path, header: DbHeader) -> Result<(), DbError> {
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
         .open(path)
         .map_err(|_| DbError::FileOpenError)?;
+    let mut writer = BufWriter::new(file);
 
     let buf = header.to_bytes();
-    file.seek(SeekFrom::Start(0))
+    writer
+        .seek(SeekFrom::Start(0))
         .map_err(|_| DbError::SeekError)?;
-    file.write_all(&buf)
+    writer
+        .write_all(&buf)
         .map_err(|_| DbError::WriteError)?;
-    file.flush().map_err(|_| DbError::WriteError)?;
+    writer.flush().map_err(|_| DbError::WriteError)?;
+    writer.get_ref().sync_all().map_err(DbError::Io)?;
     Ok(())
 }

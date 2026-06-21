@@ -3,7 +3,7 @@ use crate::types::{EdgeId, NodeId};
 use crate::value::{BOOLEAN, FLOAT, INTEGER, LONG_STRING, NULL, STRING, Value};
 use crc32fast::Hasher;
 use std::fs::{File, OpenOptions};
-use std::io::{Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 #[repr(u8)]
@@ -185,19 +185,28 @@ impl WalEntry {
 }
 
 pub struct Wal {
-    file: File,
+    reader: File,
+    writer: BufWriter<File>,
 }
 
 impl Wal {
     pub fn open(path: &Path) -> Result<Self, DbError> {
-        let file = OpenOptions::new()
+        let reader = OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
             .open(path)
             .map_err(|_| DbError::FileOpenError)?;
+        let writer_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(path)
+            .map_err(|_| DbError::FileOpenError)?;
 
-        Ok(Self { file })
+        Ok(Self {
+            reader,
+            writer: BufWriter::new(writer_file),
+        })
     }
 
     pub fn append(&mut self, entry: &WalEntry) -> Result<(), DbError> {
@@ -206,28 +215,30 @@ impl Wal {
         let checksum = crc32_for_entry(entry_type, &payload);
         let length = (1 + payload.len() + 4) as u32;
 
-        self.file
+        self.writer
             .seek(SeekFrom::End(0))
             .map_err(|_| DbError::SeekError)?;
-        self.file
+        self.writer
             .write_all(&length.to_le_bytes())
             .map_err(|_| DbError::WriteError)?;
-        self.file
+        self.writer
             .write_all(&[entry_type])
             .map_err(|_| DbError::WriteError)?;
-        self.file
+        self.writer
             .write_all(&payload)
             .map_err(|_| DbError::WriteError)?;
-        self.file
+        self.writer
             .write_all(&checksum.to_le_bytes())
             .map_err(|_| DbError::WriteError)?;
-        self.file.flush().map_err(|_| DbError::WriteError)?;
+        self.writer.flush().map_err(|_| DbError::WriteError)?;
 
         Ok(())
     }
 
     pub fn read_all(&mut self) -> Result<Vec<WalEntry>, DbError> {
-        self.file
+        self.flush()?;
+
+        self.reader
             .seek(SeekFrom::Start(0))
             .map_err(|_| DbError::SeekError)?;
 
@@ -236,7 +247,7 @@ impl Wal {
         loop {
             let mut len_buf = [0u8; 4];
 
-            match self.file.read_exact(&mut len_buf) {
+            match self.reader.read_exact(&mut len_buf) {
                 Ok(()) => {}
                 Err(err) if err.kind() == ErrorKind::UnexpectedEof => break,
                 Err(_) => return Err(DbError::ReadError),
@@ -248,7 +259,7 @@ impl Wal {
             }
 
             let mut body = vec![0u8; length];
-            match self.file.read_exact(&mut body) {
+            match self.reader.read_exact(&mut body) {
                 Ok(()) => {}
                 Err(err) if err.kind() == ErrorKind::UnexpectedEof => break,
                 Err(_) => return Err(DbError::ReadError),
@@ -272,16 +283,24 @@ impl Wal {
     }
 
     pub fn sync(&mut self) -> Result<(), DbError> {
-        self.file.sync_all().map_err(DbError::Io)
+        self.flush()?;
+        self.writer.get_ref().sync_all().map_err(DbError::Io)
     }
 
     pub fn truncate(&mut self) -> Result<(), DbError> {
-        self.file.set_len(0).map_err(|_| DbError::WriteError)?;
-        self.file
+        self.flush()?;
+        self.writer
+            .get_mut()
+            .set_len(0)
+            .map_err(|_| DbError::WriteError)?;
+        self.writer
             .seek(SeekFrom::Start(0))
             .map_err(|_| DbError::SeekError)?;
-        self.file.flush().map_err(|_| DbError::WriteError)?;
         Ok(())
+    }
+
+    pub fn flush(&mut self) -> Result<(), DbError> {
+        self.writer.flush().map_err(|_| DbError::WriteError)
     }
 }
 

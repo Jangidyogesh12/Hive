@@ -7,3 +7,10 @@ edition = "2024"
 pest = "2"
 pest_derive = "2"
 crc32fast = "1"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "hive_bench"
+harness = false
