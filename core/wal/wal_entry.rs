@@ -1,9 +1,7 @@
 use crate::errors::DbError;
 use crate::types::{EdgeId, NodeId};
 use crate::value::Value;
-use std::io::Cursor;
-
-use super::utils::*;
+use super::codec::{Deserializer, Serializer};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +90,7 @@ impl WalEntry {
 
     pub(super) fn encode_payload(&self) -> Result<Vec<u8>, DbError> {
         let mut buf = Vec::new();
+        let mut ser = Serializer::new(&mut buf);
 
         match self {
             Self::CreateNode {
@@ -99,9 +98,9 @@ impl WalEntry {
                 label,
                 properties,
             } => {
-                write_u64(&mut buf, *node_id)?;
-                write_string(&mut buf, label)?;
-                write_properties(&mut buf, properties)?;
+                ser.write_u64(*node_id)?;
+                ser.write_string(label)?;
+                ser.write_properties(properties)?;
             }
             Self::CreateEdge {
                 edge_id,
@@ -110,74 +109,74 @@ impl WalEntry {
                 label,
                 properties,
             } => {
-                write_u64(&mut buf, *edge_id)?;
-                write_u64(&mut buf, *src)?;
-                write_u64(&mut buf, *dst)?;
-                write_string(&mut buf, label)?;
-                write_properties(&mut buf, properties)?;
+                ser.write_u64(*edge_id)?;
+                ser.write_u64(*src)?;
+                ser.write_u64(*dst)?;
+                ser.write_string(label)?;
+                ser.write_properties(properties)?;
             }
             Self::UpdateNode {
                 node_id,
                 key,
                 value,
             } => {
-                write_u64(&mut buf, *node_id)?;
-                write_string(&mut buf, key)?;
-                write_value(&mut buf, value)?;
+                ser.write_u64(*node_id)?;
+                ser.write_string(key)?;
+                ser.write_value(value)?;
             }
             Self::UpdateEdge {
                 edge_id,
                 key,
                 value,
             } => {
-                write_u64(&mut buf, *edge_id)?;
-                write_string(&mut buf, key)?;
-                write_value(&mut buf, value)?;
+                ser.write_u64(*edge_id)?;
+                ser.write_string(key)?;
+                ser.write_value(value)?;
             }
-            Self::DeleteNode { node_id } => write_u64(&mut buf, *node_id)?,
-            Self::DeleteEdge { edge_id } => write_u64(&mut buf, *edge_id)?,
+            Self::DeleteNode { node_id } => ser.write_u64(*node_id)?,
+            Self::DeleteEdge { edge_id } => ser.write_u64(*edge_id)?,
             Self::Checkpoint => {}
-            Self::Transaction { entries } => write_entries(&mut buf, entries)?,
+            Self::Transaction { entries } => ser.write_entries(entries)?,
         }
 
         Ok(buf)
     }
 
     pub(super) fn decode(entry_type: u8, payload: &[u8]) -> Result<Self, DbError> {
-        let mut cursor = Cursor::new(payload);
+        let mut de = Deserializer::new(payload);
 
         match WalEntryType::from_byte(entry_type)? {
             WalEntryType::CreateNode => Ok(Self::CreateNode {
-                node_id: read_u64(&mut cursor)?,
-                label: read_string(&mut cursor)?,
-                properties: read_properties(&mut cursor)?,
+                node_id: de.read_u64()?,
+                label: de.read_string()?,
+                properties: de.read_properties()?,
             }),
             WalEntryType::CreateEdge => Ok(Self::CreateEdge {
-                edge_id: read_u64(&mut cursor)?,
-                src: read_u64(&mut cursor)?,
-                dst: read_u64(&mut cursor)?,
-                label: read_string(&mut cursor)?,
-                properties: read_properties(&mut cursor)?,
+                edge_id: de.read_u64()?,
+                src: de.read_u64()?,
+                dst: de.read_u64()?,
+                label: de.read_string()?,
+                properties: de.read_properties()?,
             }),
             WalEntryType::UpdateNode => Ok(Self::UpdateNode {
-                node_id: read_u64(&mut cursor)?,
-                key: read_string(&mut cursor)?,
-                value: read_value(&mut cursor)?,
+                node_id: de.read_u64()?,
+                key: de.read_string()?,
+                value: de.read_value()?,
             }),
             WalEntryType::UpdateEdge => Ok(Self::UpdateEdge {
-                edge_id: read_u64(&mut cursor)?,
-                key: read_string(&mut cursor)?,
-                value: read_value(&mut cursor)?,
+                edge_id: de.read_u64()?,
+                key: de.read_string()?,
+                value: de.read_value()?,
             }),
             WalEntryType::DeleteNode => Ok(Self::DeleteNode {
-                node_id: read_u64(&mut cursor)?,
+                node_id: de.read_u64()?,
             }),
             WalEntryType::DeleteEdge => Ok(Self::DeleteEdge {
-                edge_id: read_u64(&mut cursor)?,
+                edge_id: de.read_u64()?,
             }),
             WalEntryType::Checkpoint => Ok(Self::Checkpoint),
             WalEntryType::Transaction => Ok(Self::Transaction {
-                entries: read_entries(&mut cursor)?,
+                entries: de.read_entries()?,
             }),
         }
     }
