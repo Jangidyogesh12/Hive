@@ -1,7 +1,7 @@
 mod codec;
 mod utils;
-mod wal_entry;
 mod wal;
+mod wal_entry;
 
 pub use codec::{Deserializer, Serializer};
 pub use wal::Wal;

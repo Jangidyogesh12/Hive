@@ -1,8 +1,8 @@
+use super::utils::crc32_for_entry;
 use crate::errors::DbError;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::Path;
-use super::utils::crc32_for_entry;
 
 use super::wal_entry::WalEntry;
 

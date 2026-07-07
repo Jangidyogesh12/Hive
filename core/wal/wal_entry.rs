@@ -1,7 +1,7 @@
+use super::codec::{Deserializer, Serializer};
 use crate::errors::DbError;
 use crate::types::{EdgeId, NodeId};
 use crate::value::Value;
-use super::codec::{Deserializer, Serializer};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

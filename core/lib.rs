@@ -20,6 +20,7 @@
 pub mod db;
 pub mod errors;
 pub mod query;
+pub mod storage;
 pub mod store;
 pub mod transaction;
 pub mod types;

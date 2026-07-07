@@ -570,7 +570,7 @@ This is **simple but scales poorly**:
 CURRENT HIVE                          PRODUCTION HIVE (target)
 ═════════════                         ════════════════════════
 
-Flat files per entity type          Unified page-based DB file (or few files)
+Flat files per entity type          One unified page file (+ wal.hive kept separate)
 Fixed-width records                  Variable-width records in slotted pages
 Random I/O per record               Batched I/O per page
 In-memory HashMaps for indexes      B-Tree indexes on pages
@@ -581,43 +581,81 @@ Full index rebuild on every write   Incremental B-Tree maintenance
 Single-threaded                     Page-level concurrency ready
 ```
 
+#### File Consolidation: 9 Separate Files → 2 Files
+
+With page-based storage, all entity data lives in a **single unified page file** (`database.hive`). Only the WAL remains separate (like SQLite's `database.db` + `database.db-wal`). The Meta page (page 1) inside the unified file replaces `meta.hive`.
+
+```
+CURRENT (9+ separate files):                   PRODUCTION (2 files):
+─────────────────────────────                  ─────────────────────
+.hive/                                         .hive/
+├── meta.hive          ──────────────────────┐ ├── database.hive    ← single page file
+├── nodes.hive         ──────────────────┐   │ │    Page 1: Meta (version, counters, roots)
+├── edges.hive         ──────────────┐   │   │ │    Page 2-50:  DataNode pages
+├── props.hive         ──────────┐   │   │   │ │    Page 51-100: DataEdge pages
+├── strings.hive       ──────┐   │   │   │   │ │    Page 101-120: DataProperty pages
+├── labels.hive        ──┐   │   │   │   │   │ │    Page 121-125: StringData pages
+├── indexes.hive        ─┤   │   │   │   │   │ │    Page 126-130: LabelData pages
+├── freelist_nodes.hive ─┤   │   │   │   │   │ │    Page 131-140: IndexInterior pages
+├── freelist_edges.hive ─┤   │   │   │   │   │ │    Page 141-150: IndexLeaf pages
+│                        │   │   │   │   │   │ │    Page 151-155: Freelist pages
+│                 ┌──────┘   │   │   │   │   │ │    Page 156+:     Overflow pages
+│                 │  ┌───────┘   │   │   │   │ │
+│                 │  │  ┌────────┘   │   │   │ │
+│                 │  │  │  ┌─────────┘   │   │ │
+│                 │  │  │  │  ┌──────────┘   │ │
+│                 │  │  │  │  │  ┌───────────┘ │
+│                 │  │  │  │  │  │  ┌──────────┘
+├── wal.hive         (stays separate)    ────▶ └── wal.hive           ← WAL (always separate)
+```
+
+**Why consolidate into one file?**
+- **Single file descriptor**: Open one file, not 9+. Fewer OS resources.
+- **Same as SQLite**: Industry standard. One `.db` file + one `.db-wal` file. Easy to copy, backup, ship.
+- **No "half-open" state**: If a crash happens during directory creation, you can't have some files created and others missing. One file = atomic `open()` or `create()`.
+- **Page types differentiate data**: The page type byte in each page header tells you what's inside — no need for separate files to distinguish nodes from edges from indexes.
+- **WAL stays separate by design**: The WAL is a sequential log. Keeping it separate means the main DB file is always page-aligned (offset = pgno × 4096), and the WAL can be truncated independently without fragmenting the DB file.
+
 ### 3.3 Hive's Page Types
 
 Unlike SQLite (which has 4 types: table interior/leaf + index interior/leaf), Hive needs different page types because it stores a **graph**, not tables:
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     Hive's Page Type Taxonomy                       │
-├──────────────┬──────────────────────────────────────────────────────┤
-│ Page Type    │ Purpose                                              │
-├──────────────┼──────────────────────────────────────────────────────┤
-│ Meta         │ Database header (one per DB). Replaces meta.hive.    │
-│              │ Contains magic, version, counters, root page ptrs.   │
-├──────────────┼──────────────────────────────────────────────────────┤
-│ DataNode     │ Stores node records in slotted format.               │
-│              │ Each slot = one NodeRecord (variable width now).     │
-├──────────────┼──────────────────────────────────────────────────────┤
-│ DataEdge     │ Stores edge records in slotted format.               │
-│              │ Each slot = one EdgeRecord (variable width now).     │
-├──────────────┼──────────────────────────────────────────────────────┤
-│ DataProperty │ Stores property records in slotted format.           │
-├──────────────┼──────────────────────────────────────────────────────┤
-│ StringData   │ Stores variable-length strings (was strings.hive).   │
-│              │ Large strings span multiple pages.                   │
-├──────────────┼──────────────────────────────────────────────────────┤
-│ LabelData    │ Stores label<->id mappings (was labels.hive).        │
-├──────────────┼──────────────────────────────────────────────────────┤
-│ IndexInterior│ B-tree interior node for any index.                  │
-├──────────────┼──────────────────────────────────────────────────────┤
-│ IndexLeaf    │ B-tree leaf node for any index.                      │
-├──────────────┼──────────────────────────────────────────────────────┤
-│ Freelist     │ Tracks which pages are free for reuse.               │
-│              │ Linked list of page numbers.                         │
-├──────────────┼──────────────────────────────────────────────────────┤
-│ Overflow     │ When a record is too large to fit in one page.       │
-│              │ Chains to continuation pages.                        │
-└──────────────┴──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                     Hive's Page Type Taxonomy                            │
+├──────────────┬──────┬────────────────────────────────────────────────────┤
+│ Page Type    │ Code │ Purpose                            │ Replaces      │
+├──────────────┼──────┼────────────────────────────────────┼───────────────┤
+│ Meta         │ 0x00 │ Database header (one per DB).      │ meta.hive     │
+│              │      │ Magic, version, counters, roots.   │               │
+├──────────────┼──────┼────────────────────────────────────┼───────────────┤
+│ DataNode     │ 0x01 │ Node records in slotted format.    │ nodes.hive    │
+│              │      │ Each slot = one NodeRecord.        │               │
+├──────────────┼──────┼────────────────────────────────────┼───────────────┤
+│ DataEdge     │ 0x02 │ Edge records in slotted format.    │ edges.hive    │
+│              │      │ Each slot = one EdgeRecord.        │               │
+├──────────────┼──────┼────────────────────────────────────┼───────────────┤
+│ DataProperty │ 0x03 │ Property records in slotted format.│ props.hive    │
+├──────────────┼──────┼────────────────────────────────────┼───────────────┤
+│ StringData   │ 0x04 │ Variable-length strings.           │ strings.hive  │
+│              │      │ Large strings span overflow pages. │               │
+├──────────────┼──────┼────────────────────────────────────┼───────────────┤
+│ LabelData    │ 0x05 │ Label<->ID mappings (bidirectional).│ labels.hive  │
+├──────────────┼──────┼────────────────────────────────────┼───────────────┤
+│ IndexInterior│ 0x0A │ B-tree interior node.              │ indexes.hive  │
+│              │      │ Points to child pages via keys.    │               │
+├──────────────┼──────┼────────────────────────────────────┼───────────────┤
+│ IndexLeaf    │ 0x0B │ B-tree leaf node.                  │ indexes.hive  │
+│              │      │ Stores (key → value) pairs.        │               │
+├──────────────┼──────┼────────────────────────────────────┼───────────────┤
+│ Freelist     │ 0x0F │ Tracks free page numbers for reuse.│ freelist_*.hive│
+│              │      │ Linked list of page IDs.           │               │
+├──────────────┼──────┼────────────────────────────────────┼───────────────┤
+│ Overflow     │ 0x10 │ Continuation pages.                │ (new)         │
+│              │      │ Chains extra data for large records.│              │
+└──────────────┴──────┴────────────────────────────────────┴───────────────┘
 ```
+**Note**: Codes 0x06-0x09 and 0x0C-0x0E are reserved for future page types (e.g., compression dict pages, blob pages, spatial index pages).
 
 **Why separate DataNode and DataEdge pages instead of one unified Data page?**
 - **Traversal locality**: When you traverse edges from a node, consecutive edges of that node live together on the same page. If nodes and edges shared pages, a node and its edges would be scattered.
@@ -626,39 +664,95 @@ Unlike SQLite (which has 4 types: table interior/leaf + index interior/leaf), Hi
 
 ### 3.4 Hive's Page Header Design
 
-Every page (except Meta) starts with a uniform header:
+There are **two** page header formats: the **Regular Page Header** (20 bytes, on pages 2, 3, 4, ...) and the **Meta Page Header** (~100 bytes, on page 1 only).
+
+#### 3.4.1 Regular Page Header (Pages 2+)
+
+Every regular page — DataNode, DataEdge, DataProperty, IndexInterior, IndexLeaf, StringData, LabelData, Freelist, Overflow — starts with this uniform 20-byte header:
 
 ```
-HIVE PAGE HEADER (16 bytes)
+REGULAR HIVE PAGE HEADER (20 bytes)
 ┌──────────────┬──────────┬────────────┬─────────────┬──────────────┬─────────────┐
 │ Page Type    │ Free     │ Slot Count │ Free Space  │ First        │ Checksum    │
 │ (u8)         │ Flags(u8)│ (u16)      │ Offset (u16)│ Freeblock(u16)│ (u32)       │
 └──────────────┴──────────┴────────────┴─────────────┴──────────────┴─────────────┘
   Byte 0          1         2          4              6               8          12
 
-Followed by: LSN (u32) - Log Sequence Number for WAL recovery  →  Byte 12-16
-             Reserved (u32) - Padding for future use            →  Byte 16-20
-             
-TOTAL HEADER: 20 bytes
+┌──────────────┬──────────────────────┐
+│ LSN (u32)    │ Reserved (u32)       │
+└──────────────┴──────────────────────┘
+  Byte 12       Byte 16              20
 ```
 
-| Field | Type | Purpose |
-|-------|------|---------|
-| `page_type` | u8 | One of the page types listed above |
-| `free_flags` | u8 | Bit flags: HAS_OVERFLOW, IS_COMPRESSED, etc. |
-| `slot_count` | u16 | Number of active slots on this page |
-| `free_space_offset` | u16 | Where free space starts (slot array grows up, content grows down from here) |
-| `first_freeblock` | u16 | Offset to first freeblock chain (0 = none) |
-| `checksum` | u32 | CRC32 of page contents (for corruption detection) |
-| `lsn` | u32 | Log Sequence Number — which WAL entry last modified this page |
+| Field | Type | Byte Range | Purpose |
+|-------|------|------------|---------|
+| `page_type` | u8 | 0 | One of the 10 page types listed in section 3.3 |
+| `free_flags` | u8 | 1 | Bit flags: `HAS_OVERFLOW` (bit 0), `IS_COMPRESSED` (bit 1), etc. |
+| `slot_count` | u16 | 2-3 | Number of active slots on this page (u16, max 65535) |
+| `free_space_offset` | u16 | 4-5 | Where free space starts — slot directory grows up from byte 20, content grows down from here |
+| `first_freeblock` | u16 | 6-7 | Offset to first freeblock chain within the content area (0 = no freeblocks) |
+| `checksum` | u32 | 8-11 | CRC32 of bytes 12 to 4095 (slot directory + content area). Detects bit-rot and I/O corruption. |
+| `lsn` | u32 | 12-15 | Log Sequence Number — which WAL commit last modified this page. Used for recovery. |
+| `reserved` | u32 | 16-19 | Padding for future fields (e.g., compression dictionary pointer, page version chain for MVCC) |
 
-**Why 20 bytes for the header?**
-- Simpler than SQLite's 8/12 byte split. Uniform = less code complexity.
-- Includes LSN (Log Sequence Number) for crash recovery. On recovery: if `page LSN >= checkpoint LSN`, replay the WAL frame for this page.
-- Includes checksum for corruption detection. A single flipped bit in a 4KB page could cause subtle bugs.
+**Why checksum bytes 12-4095 and not 0-4095?** The first 12 bytes include `checksum` and `lsn` which change independently. Computing the checksum over the entire page would require recalculating the checksum every time the header changes (chicken-and-egg problem). By excluding the header fields, we checksum only the slot directory + content area — the part that changes when records are modified.
 
-**Design rationale — why not use SQLite's exact header?**
-Hive is a graph database, not a relational database. We don't need the "rightmost pointer" in data pages. We DO need an LSN for our WAL recovery model. Keeping it uniform (all page headers same size) is simpler to implement and debug.
+**Why slot_count is u16 (max 65535)?** With 4KB pages, you can't physically fit more than ~1000 slots (each slot = 4 bytes + minimum record). u16 gives headroom for future 64KB pages.
+
+**Why uniform for all page types?** Simpler than SQLite's 8/12 byte split (leaf vs interior). One code path for `read_page_header()`, `write_page_header()`, `verify_checksum()`. Less room for bugs. Interior B-tree pages that need a rightmost pointer store it as the LAST slot entry, not as a separate header field.
+
+#### 3.4.2 Meta Page Header (Page 1 Only)
+
+Page 1 is the **Meta page**. It does NOT use the regular page header. Instead, the first ~100 bytes are database-wide metadata. The remaining space (bytes 100-4095) is a slotted page — typically holding the root of the B-tree index or freelist data.
+
+```
+META PAGE (Page 1) Layout:
+┌────────────────────────────────────────────────────┬──────────────────────────────┐
+│   Meta Header (~100 bytes)                         │   Slotted content            │
+│   (Database-wide metadata)                         │   (index root / freelist     │
+│                                                    │    / schema data)            │
+└────────────────────────────────────────────────────┴──────────────────────────────┘
+    0                                          ~99   ~100                     4095
+```
+
+```
+META HEADER FIELDS:
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Offset │ Size │ Field              │ Purpose                            │
+├────────┼──────┼────────────────────┼────────────────────────────────────┤
+│ 0      │ 8    │ magic              │ "HIVE\\x00\\x00\\x00\\x01"            │ ← identifies a Hive DB file
+│ 8      │ 4    │ version            │ Format version (u32, currently 1)  │ ← rejects incompatible files
+│ 12     │ 4    │ page_size          │ 4096 (u32, must be power of 2)     │ ← validates page size
+│ 16     │ 4    │ db_size_pages      │ Total pages in DB file (u32)       │ ← know where file ends
+│ 20     │ 8    │ node_count         │ Live (non-deleted) nodes (u64)      │ ← fast COUNT without scan
+│ 28     │ 8    │ edge_count         │ Live edges (u64)                    │
+│ 36     │ 8    │ property_count     │ Total property records (u64)        │
+│ 44     │ 4    │ root_data_page     │ First DataNode page (u32, 0=none)   │ ← entry point for node scans
+│ 48     │ 4    │ root_edge_page     │ First DataEdge page (u32, 0=none)   │ ← entry point for edge scans
+│ 52     │ 4    │ root_label_page    │ First LabelData page (u32)          │
+│ 56     │ 4    │ root_string_page   │ First StringData page (u32)         │
+│ 60     │ 4    │ freelist_head      │ First Freelist page (u32, 0=none)   │ ← free page chain
+│ 64     │ 4    │ schema_version     │ Incremented on schema changes (u32) │ ← invalidates cached plans
+│ 68     │ 4    │ checksum           │ CRC32 of bytes 0-67 (u32)           │ ← protects meta header
+│ 72     │ 4    │ lsn                │ Last LSN that modified meta (u32)   │ ← WAL recovery
+│ 76     │ 24   │ reserved           │ Padding for future fields            │
+└────────┴──────┴────────────────────┴────────────────────────────────────┘
+ TOTAL: 100 bytes
+```
+
+**What lives in the remaining 3996 bytes of page 1?**
+- Typically: the B-tree root node for an index, or a freelist trunk page, or label mapping data
+- It uses the regular slotted page layout starting at byte 100
+- Since meta page is always pinned in the page cache, putting frequently accessed data here avoids extra disk reads
+
+**Why is the meta page special?**
+- **Never evicted**: The meta page is always in the page cache (pinned with max ref_bit). It's the entry point to the entire database.
+- **Always page 1**: Offset 0 in the DB file. No lookup needed to find it.
+- **Read first on startup**: Open the DB file → read page 1 → validate magic + version → know database size, freelist head, root page pointers → ready to serve queries
+- **Updated atomically**: Meta page changes go through WAL like any other page. On crash recovery, the WAL may contain an updated version of page 1. Recovery reads the latest version from WAL → consistent state.
+
+**Why is meta header ~100 bytes vs. regular page header 20 bytes?**
+SQLite uses a 100-byte header because it was defined decades ago. Hive doesn't need SQLite compatibility, but ~100 bytes is a reasonable size — enough for all database-wide fields + room for future additions in `reserved`. Regular pages only need 20 bytes because per-page metadata is minimal (type, slots, free space, LSN, checksum).
 
 ### 3.5 Hive's Slotted Page Layout
 
@@ -768,6 +862,7 @@ The value blob is the most variable part — booleans (1 byte), integers (1-8 by
 
 | Design Choice | Why |
 |---------------|-----|
+| **One unified file + WAL** | Simpler than 9+ separate files. One file descriptor. Easy to copy/backup. Same model as SQLite (`database.db` + `database.db-wal`). Page types distinguish content — no need for separate files. |
 | **4KB page size** | OS page size on most systems. Aligns with filesystem blocks. Big enough for ~100 small records, small enough for efficient caching. |
 | **Slotted pages** | Supports variable-width records. Standard in PostgreSQL, SQLite, MySQL/InnoDB. Battle-tested. |
 | **Separate page types per entity** | Nodes, edges, and properties have different layouts and access patterns. Separate page types simplify code and optimize cache usage. |

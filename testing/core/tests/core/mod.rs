@@ -4,6 +4,7 @@ mod edge_store;
 mod free_list;
 mod label_store;
 mod node_store;
+mod page_storage;
 mod property_store;
 mod query;
 mod record;
