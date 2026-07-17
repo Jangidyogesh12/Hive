@@ -12,8 +12,7 @@ name = "hive_core"
 path = "lib.rs"
 
 [dependencies]
-pest.workspace = true
-pest_derive.workspace = true
+hive_parser.workspace = true
 crc32fast.workspace = true
 
 [dev-dependencies]

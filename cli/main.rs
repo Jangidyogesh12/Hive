@@ -129,7 +129,7 @@ fn print_unicode_logo() {
 }
 
 fn execute_query(db: &mut HiveDb, input: &str) -> Result<(), String> {
-    let statement = parser::parse(input)?;
+    let statement = parser::parse(input).map_err(|e| e.to_string())?;
     let plan = planner::plan(statement).map_err(|error| error.to_string())?;
     let result = Executor::new(db)
         .execute(plan)

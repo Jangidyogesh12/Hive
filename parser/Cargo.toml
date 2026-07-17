@@ -1,0 +1,16 @@
+[package]
+name = "hive_parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Hand-written recursive descent parser for the Hive Cypher-like query language"
+
+[lib]
+name = "hive_parser"
+path = "src/lib.rs"
+
+[dependencies]
+miette = "7"
+thiserror = "1"

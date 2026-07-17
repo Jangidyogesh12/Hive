@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["bindings/rust", "cli", "core", "testing/core"]
-default-members = ["bindings/rust", "cli", "core", "testing/core"]
+members = ["bindings/rust", "cli", "core", "parser", "testing/core"]
+default-members = ["bindings/rust", "cli", "core", "parser", "testing/core"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,8 +13,7 @@ authors = ["Hive authors"]
 [workspace.dependencies]
 hive = { path = "bindings/rust", version = "0.1.0" }
 hive_core = { path = "core", version = "0.1.0" }
-pest = "2"
-pest_derive = "2"
+hive_parser = { path = "parser", version = "0.1.0" }
 crc32fast = "1"
 criterion = "0.5"
 rustyline = "14"

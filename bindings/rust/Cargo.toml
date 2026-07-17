@@ -13,6 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 hive_core = { workspace = true }
+hive_parser = { workspace = true }
 
 [[example]]
 name = "social_graph"

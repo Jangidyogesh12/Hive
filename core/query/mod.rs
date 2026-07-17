@@ -1,6 +1,7 @@
-pub mod ast;
+pub use hive_parser::ast;
+pub use hive_parser::parser;
+
 pub mod executor;
-pub mod parser;
 pub mod planner;
 pub mod result;
 pub mod utils;
