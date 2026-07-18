@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["bindings/rust", "cli", "core", "parser", "testing/core"]
-default-members = ["bindings/rust", "cli", "core", "parser", "testing/core"]
+members = ["bindings/rust", "cli", "core", "parser", "testing/rust"]
+default-members = ["bindings/rust", "cli", "core", "parser", "testing/rust"]
 
 [workspace.package]
 version = "0.1.0"

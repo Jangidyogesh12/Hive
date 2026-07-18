@@ -1,609 +1,471 @@
 # Hive DB Study Plan
 
-> **Updated**: July 2026 — restructured with async + multithreading priorities and clear dependency chains.
+> Updated: July 2026. This document reflects the cleanup from the old multi-file node/edge/property stores to the new page-based storage direction with buffer pooling, page caching, physical WAL, and pager recovery.
 
 ---
 
-## Dependency Graph
+## Current Direction
 
-```
-Phase 1: Page-Based Storage ──────────────────────────────────────────────────────────────┐
-        │                                                                                 │
-        ├──▶ Phase 2: Buffer Pool + Page Cache ──────────────────────────────────────────┤
-        │         │                                                                       │
-        │         ├──▶ Phase 3: Physical WAL + Crash Recovery ────────────────────────────┤
-        │         │         │                                                             │
-        │         │         ├──▶ Phase 4: Arc<RwLock<HiveDb>> ── Basic Concurrency ───────┤
-        │         │         │         │                                                   │
-        │         │         │         ├──▶ Phase 5: B-Tree Indexes on Pages ──────────────┤
-        │         │         │         │         │                                         │
-        │         │         │         │         ├──▶ Phase 6: Page-Level Locking ─────────┤
-        │         │         │         │         │         │                               │
-        │         │         │         │         │         ├──▶ Phase 7: Async I/O ────────┤
-        │         │         │         │         │         │         │                     │
-        │         │         │         │         │         │         ├──▶ Phase 8: MVCC ───┤
-        │         │         │         │         │         │         │         │           │
-        │         │         │         │         │         │         │         │           │
-        │         │         │         │         │         │         │         ▼           │
-        │         │         │         │         │         │         │   Phase 9: Compaction│
-        │         │         │         │         │         │         │         │           │
-        │         │         │         │         │         │         │         ▼           │
-        │         │         │         │         │         │         │   Phase 10: Query   │
-        │         │         │         │         │         │         │   Optimization      │
-```
+Hive is being rebuilt around one page-oriented storage engine instead of many separate record files.
+
+Old direction:
+- Separate files/stores for nodes, edges, properties, strings, labels, indexes, freelists.
+- Fixed-width records written directly at offsets.
+- Logical graph APIs like `create_node`, `create_edge`, `get_node`, `info`, and property lookup lived above those stores.
+- Query executor assumed those graph APIs existed.
+
+New direction:
+- One main database file managed as 4KB pages: `hive.db`.
+- A `Pager` owns disk I/O, cache, buffer pool, dirty page tracking, and sync/flush boundaries.
+- Page layout supports variable-width records using slotted pages.
+- WAL is now physical: full page images, not logical node/edge operations.
+- High-level graph CRUD and query execution need to be rebuilt on top of the pager.
 
 ---
 
-## Phase 1: Page-Based Storage (Foundation — Blocks Everything)
+## What Was Removed Or Made Stale
 
-Prerequisite for buffering, concurrency, indexes, and compaction. Currently Hive uses fixed-width records (40-byte nodes, 56-byte edges, 56-byte properties) at raw byte offsets. This means:
+The old storage model is no longer the source of truth.
 
-- No abstraction for caching (buffer pool needs pages as unit of work)
-- No efficient multi-record operations (each record is a separate read/write syscall)
-- No natural unit for concurrency (can't lock "half a record")
-- No alignment with B-tree nodes (which are page-sized)
-- Read operations that should be const require `&mut self` because `flush()` forces store mutation
+Removed/stale concepts:
+- Node store file APIs.
+- Edge store file APIs.
+- Property store file APIs.
+- String/label/freelist stores as separate old-format stores.
+- Old fixed-width node/edge/property record flow.
+- Old logical WAL entries tied to graph operations.
+- Old query executor path that expected direct `HiveDb` graph methods.
+- Old tests for the deleted store APIs.
 
-### Resources
-
-- **"Database Internals" Ch. 5-6** — page layout, slotted pages, page headers
-- **PostgreSQL page layout** — 8KB pages, tuple format, line pointers
-- **SQLite page format** — B-tree page types, cell layout
-- **CMU 15-445 L0** — page abstraction fundamentals
-
-### Design Decisions for Hive
-
-- **Page size**: 4KB (OS page size; aligns with filesystem blocks)
-- **Slotted page layout** — headers point to variable-length slots within a page
-- **Page types** — data pages (nodes/edges/properties), index pages (B-tree interior/leaf), overhead pages (freelist, string overflow, meta page)
-- **Multi-record pages** — pack multiple records per page to reduce I/O and enable sequential scans
-- **Page header format** — page type, LSN (for WAL recovery), free space offset, slot count, checksum (CRC32)
-- **20-byte uniform header** — same size for all page types, simpler than SQLite's 8/12 byte split
-
-### Implementation
-
-1. Define page abstraction (`PageHeader`, `SlotEntry`, `PageType` enum)
-2. Implement page-level I/O (file operations on 4KB pages, not individual records)
-3. Variable-width record formats (`NodeRecordV2`, `EdgeRecordV2`, `PropertyRecordV2` with varint encoding)
-4. Migrate one store at a time (start with nodes, then edges, then properties)
-5. Old format compatibility — one-time migration tool or detect format on open
-
-### Files to Create
-
-```
-core/storage/page/
-├── mod.rs           # Module declarations
-├── format.rs        # PageHeader, PageType enum, constants
-├── layout.rs        # init_page, insert_record, read_record, delete_record, compact_page
-├── record.rs        # Variable-width NodeRecordV2, EdgeRecordV2, PropertyRecordV2
-└── serialize.rs     # Varint encode/decode, binary read/write helpers
-```
+Stale public examples were also fixed:
+- `examples/social_graph.rs` no longer calls removed APIs.
+- `examples/knowledge_graph.rs` no longer calls removed APIs.
+- Examples now open a database and demonstrate Cypher parse/plan output.
 
 ---
 
-## Phase 2: Buffer Pool + Page Cache
+## What Exists Now
 
-Builds on page abstraction — caches pages in memory, reduces disk I/O. Without this, every page read hits the disk even if the page was read 2ms ago.
+### Page Format
 
-### Why Both? (They Solve Different Problems)
+Implemented files:
+- `core/storage/page/format.rs`
+- `core/storage/page/layout.rs`
+- `core/storage/page/record.rs`
+- `core/storage/page/serializer.rs`
 
-| | Buffer Pool | Page Cache |
-|---|---|---|
-| **Analogy** | Warehouse of empty plates | Chef who decides what dish stays on the table |
-| **Owns** | Pre-allocated 4KB memory blocks | HashMap `(page_no → PageRef)` + SIEVE eviction queue |
-| **Job** | Acquire/free raw memory without `malloc` overhead | Decide which pages to keep in RAM and which to evict |
-| **Decoupled** | Swap pool impl (arena, mmap) without touching cache logic | Cache only sees `Arc<Buffer>`, doesn't care where memory came from |
+Implemented concepts:
+- `PAGE_SIZE = 4096`.
+- `PageType` for meta, node data, edge data, property data, string data, label data, index pages, freelist, and overflow.
+- `PageHeader` with type, slot count, free-space offset, freeblock pointer, checksum, LSN, and reserved bytes.
+- `MetaHeader` for database metadata.
+- `SlotEntry` for slotted-page records.
+- Page initialization, insert, read, delete, compact, checksum update/verify.
+- Variable-width `NodeRecordV2`, `EdgeRecordV2`, and `PropertyRecordV2`.
 
-### Buffer Pool Design
+Status: foundation exists and has tests.
 
-- **Simple version** (sufficient for embedded DB): `Vec<Box<[u8; PAGE_SIZE]>>` + `VecDeque<usize>` free list
-- `acquire() → Box<[u8; PAGE_SIZE]>` — get an empty page buffer
-- `release(Box<[u8; PAGE_SIZE]>)` — return buffer for reuse (data NOT zeroed, just marked free)
-- Pre-allocate at startup (e.g., 2000 pages = 8MB)
-- **Upgrade path**: Swap for arena-based + lock-free bitmap when io_uring concurrency arrives (Phase 7)
-
-### Page Cache Design
-
-- **Algorithm**: SIEVE (multi-bit improved Clock). Better than LRU for concurrent access.
-- **Capacity**: 2000 pages default, configurable
-- **Spill threshold**: 90% capacity — proactively spill dirty pages to WAL before cache is critical
-- **Eviction rules**:
-  - Page 1 (meta page) never evicted
-  - Clean pages: evict immediately
-  - Dirty pages: spill to WAL first, then evict
-  - Pinned pages: skip (pin_count > 0 means actively in use)
-- **Intrusive linked list** for eviction queue (avoids per-entry heap allocation)
-- O(1) lookup via `HashMap<PageCacheKey, *mut PageCacheEntry>`
-
-### Resources
-
-- **"Database Internals" Ch. 5** — buffer manager design
-- **PostgreSQL shared_buffers** — page cache architecture
-- **LMDB / BoltDB** — memory-mapped approaches (alternative to explicit buffer pool)
-- **InnoDB buffer pool** — production-grade reference implementation
-
-### Files to Create
-
-```
-core/storage/buffer_pool.rs    # Arena/buffer allocator
-core/storage/page_cache.rs     # SIEVE eviction cache
-```
+Still needed:
+- Stable record ID mapping: decide how `NodeId`/`EdgeId` maps to page id + slot id.
+- Page allocation by page type.
+- Meta page initialization on first open.
+- Free page tracking integrated with allocation.
+- Long string/overflow storage integration.
 
 ---
 
-## Phase 3: Physical WAL + Crash Recovery
+### Buffer Pool
 
-With pages, the WAL switches from logical (entity-level entries like `CreateNode`, `UpdateEdge`) to **physical** (entire page images). This is what SQLite does.
+Implemented file:
+- `core/storage/buffer_pool.rs`
 
-### Why Physical WAL?
+Implemented concepts:
+- Fixed-size pool of reusable 4KB buffers.
+- `acquire()` and `release()`.
+- Avoids allocating a fresh page buffer every time.
 
-| Aspect | Logical WAL (current) | Physical WAL (Phase 3) |
-|--------|----------------------|------------------------|
-| **Recovery speed** | Must replay every operation sequentially | Copy pages in any order, or leave in WAL |
-| **Atomicity** | Must know operation boundaries | Full page is either written or not |
-| **Crash at any point** | Complex — need transaction boundaries | Frame-level checksums detect partial writes |
-| **Rollback** | Must undo individual operations | Restore page before-image from subjournal |
-| **Size** | Small entries | Larger (full 4KB pages) but WAL truncation keeps bounded |
+Status: simple synchronous buffer pool exists.
 
-### WAL Frame Format
-
-```
-[page_number: u32][db_size: u32][page_data: [u8; 4096]][checksum: u32]
-```
-
-### Pager — Page Lifecycle Manager
-
-The `Pager` coordinates all page operations:
-
-```rust
-pub struct Pager {
-    db_file: File,                  // Main database file (one file of pages)
-    wal_file: File,                 // Write-ahead log
-    header: DbHeader,               // In-memory copy (page 1 metadata)
-    page_cache: PageCache,          // SIEVE cache
-    buffer_pool: BufferPool,        // Memory arena
-    dirty_pages: RoaringBitmap,     // Set of dirty page IDs
-}
-
-impl Pager {
-    pub fn read_page(&self, pgno: usize) -> Result<PageRef>;
-    pub fn allocate_page(&self, page_type: PageType) -> Result<PageRef>;
-    pub fn free_page(&self, pgno: usize) -> Result<()>;
-    pub fn add_dirty(&self, page: &PageRef);
-    pub fn commit(&self) -> Result<()>;       // Write dirty pages to WAL
-    pub fn checkpoint(&self) -> Result<()>;   // Copy WAL pages to main DB
-}
-```
-
-### Page Lifecycle
-
-```
-  ON DISK ──read_page()──▶ LOADED ──modify──▶ DIRTY
-                                                │
-                                          commit() writes to WAL
-                                                │
-                                                ▼
-                                             SPILLED ──checkpoint()──▶ ON DISK (clean again)
-                                                │
-                                          can now evict from cache
-```
-
-### Subjournal (Savepoints + Rollback)
-
-Before modifying a dirty page, save a **before-image** to the subjournal. On rollback, restore from subjournal entries (reverse order). Replaces the current no-op `rollback()`.
-
-### Resources
-
-- **"Database Internals" Ch. 7-8** — recovery, WAL, ARIES
-- **SQLite WAL mode documentation** — how SQLite handles partial writes and crash recovery
-- **"Designing Data-Intensive Applications" (Kleppmann) Ch. 3** — storage engine fundamentals
-
-### Files to Create
-
-```
-core/storage/pager.rs             # Pager — page lifecycle, I/O coordination
-core/storage/subjournal.rs        # Savepoint before-images
-core/wal/                         # (refactor existing) — physical frame format
-├── wal.rs
-└── wal_header.rs
-```
+Still needed:
+- Capacity configuration from database options.
+- Metrics/debug counters.
+- Better behavior when the pool is exhausted.
+- Future concurrency-safe version when page-level locking/async I/O arrives.
 
 ---
 
-## Phase 4: Arc\<RwLock\<HiveDb\>\> — Basic Concurrency
+### Page Cache
 
-**First step toward multithreading.** Simplest to implement, immediately enables concurrent readers.
+Implemented file:
+- `core/storage/page_cache.rs`
 
-### Current State (Why This Isn't Possible Yet)
+Implemented concepts:
+- `HashMap<PageId, CachedPage>`.
+- Clock/SIEVE-style eviction queue.
+- Pin count.
+- Dirty flag.
+- Spilled flag.
+- Meta page is protected from eviction.
+- Dirty pages are only evictable after they are spilled or flushed.
 
-- Every method on `HiveDb` takes `&mut self` (exclusive access)
-- `get_node()`, `get_edge()`, `info()` all require `&mut self` because stores call `flush()` before reads — and `BufWriter::flush()` needs `&mut self`
-- `Transaction` holds `&mut HiveDb` for its entire lifetime
-- Zero synchronization primitives in the codebase
+Status: cache state machine exists and has tests.
 
-### What Changes After Phases 1-3
+Still needed:
+- Real WAL spill integration before eviction.
+- Better page handles/guards so callers cannot accidentally hold references while eviction occurs.
+- Cache statistics and tuning.
+- Clear policy for dirty page checkpointing.
 
-With pages and the pager, read operations no longer need `flush()`:
-- The pager handles I/O internally via the buffer pool + page cache
-- Read-only operations become truly `&self` (they only read pages into the cache)
-- Write operations still need exclusive access (WAL append, page modification)
+---
 
-### Implementation
+### Pager
 
-```rust
-// Before (current):
-let mut db = HiveDb::open(path)?;
-let node = db.get_node(5)?;        // &mut self!
+Implemented file:
+- `core/storage/pager.rs`
 
-// After Phase 4:
-let db = Arc::new(RwLock::new(HiveDb::open(path)?));
+Implemented concepts:
+- Opens `hive.db` inside the database directory.
+- Owns `FileHandle`, `PageCache`, `BufferPool`, and LSN counter.
+- Reads pages through the cache.
+- Mutable page access marks pages dirty.
+- Allocates new pages by extending file size.
+- Flushes/syncs dirty cached pages to disk.
+- Exposes direct disk read/write helpers for recovery.
 
-// Read thread
-let db_ref = db.clone();
-thread::spawn(move || {
-    let db = db_ref.read().unwrap();
-    let node = db.get_node(5)?;    // &self — multiple readers OK!
-});
+Status: basic pager exists.
 
-// Write thread
-let db_ref = db.clone();
-thread::spawn(move || {
-    let mut db = db_ref.write().unwrap();
-    db.create_node("Person", props)?;  // &mut self — exclusive access
-});
-```
+Still needed:
+- First-open database bootstrap: create and initialize meta page.
+- Page-type-aware allocation.
+- Freelist reuse instead of only append allocation.
+- WAL-before-data rule in commit path.
+- Transaction-aware dirty page collection.
+- Page LSN updates when writing page images.
+- Safer page APIs using read/write guards instead of returning copied arrays or raw mutable refs.
 
-### Concurrency Model
+---
 
-```
-                  TIME ──────────────────────────────────────────▶
+### Physical WAL And Recovery
 
-Reader Thread 1:  [read get_node()                  ]
+Implemented files:
+- `core/wal/wal_entry.rs`
+- `core/wal/wal.rs`
+- `core/wal/recovery.rs`
+- `core/wal/codec/*`
+- `core/wal/utils.rs`
 
-Reader Thread 2:       [read get_edge()                    ]
+Implemented concepts:
+- `WalEntry::Begin`.
+- `WalEntry::PageImage`.
+- `WalEntry::Commit`.
+- `WalEntry::Checkpoint`.
+- CRC check per WAL record.
+- Partial/corrupt tail is ignored during WAL read.
+- Recovery replays committed page images if WAL page LSN is newer than disk page LSN.
+- `HiveDb::open` invokes recovery.
 
-Reader Thread 3:            [read info()     ]
+Status: physical WAL record format and redo recovery exist.
 
-Writer Thread:                            [write create_node()]  ← blocks until all readers finish
-                                                                   then acquires exclusive lock
+Still needed:
+- Actual commit path that writes dirty pages to WAL before disk.
+- Checkpoint path that flushes WAL pages into `hive.db` and truncates WAL safely.
+- Rollback/subjournal or before-image handling.
+- Transaction IDs generated by the engine instead of manually in tests.
+- WAL sync policy and durability settings.
+- Stronger LSN consistency: page header LSN should be updated before page image logging.
 
-Writer done:                                        new readers can proceed
-```
+---
 
-### Limitations
-- **All writes serialize** — only one writer at a time
-- Good enough for **read-heavy workloads** (graph queries, analytics)
-- Not good for **write-heavy workloads** (bulk imports) — needs Phase 6
+### HiveDb Public API
 
-### Rust Concurrency Patterns
+Implemented file:
+- `core/db/hive_db.rs`
 
-- `Arc<RwLock<HiveDb>>` — multi-reader, single-writer
-- `Transaction<'_>` borrows `RwLockWriteGuard` — ensures exclusive access during commit
-- `HiveDb` must implement `Send + Sync` — enabled by pager using `Arc` internally
+Current API:
+- `HiveDb::open(path)`.
+- `HiveDb::close()`.
+- Internally owns `Pager` and `Wal`.
 
-### Resources
-- **BoltDB's approach** — single-writer with concurrent readers (identical concurrency model)
-- **RwLock patterns in Rust** — `Arc<RwLock<T>>` for multi-reader access
+Status: only open/close is active.
 
-### Files to Modify
+Removed/not rebuilt yet:
+- `create_node`.
+- `create_edge`.
+- `get_node`.
+- `get_edge`.
+- `set_property`.
+- `lookup_*_by_property`.
+- `neighbors`.
+- `info`.
 
-```
-core/db/hive_db.rs            # Method signatures: read ops → &self, write ops → &mut self
-core/db/mod.rs                # Re-export
-bindings/rust/src/lib.rs      # Public API uses Arc<RwLock<HiveDb>>
-cli/main.rs                   # CLI wraps in Arc<RwLock<>>
+Still needed:
+- Rebuild graph CRUD on top of pager pages.
+- Define durable node/edge/property ID format.
+- Maintain adjacency links in `EdgeRecordV2` or via indexes.
+- Maintain counts in meta page.
+- Expose a clean public API from `bindings/rust` once core APIs stabilize.
+
+---
+
+### Query Layer
+
+Implemented files:
+- `parser/*`
+- `core/query/planner.rs`
+- `core/query/result.rs`
+
+Current status:
+- Parser works.
+- Planner works.
+- Examples demonstrate parse/plan output.
+- Executor is intentionally stubbed in `core/query/executor.rs`.
+
+Still needed:
+- Rebuild executor against pager-backed graph APIs.
+- Implement `CREATE` node/relationship execution.
+- Implement `MATCH` scans/traversals.
+- Implement `WHERE`, `RETURN`, `SET`, `DELETE`, `MERGE` execution.
+- Add tests after graph CRUD is restored.
+
+---
+
+### Tests
+
+Current status:
+- Old store tests were removed because they targeted deleted APIs.
+- Remaining tests focus on page storage, buffer pool, page cache, serialization, records, layout, and WAL.
+- Test module wiring is now test-only via `#[cfg(test)]`, so normal `cargo check` does not compile test modules as library code.
+
+Useful commands:
+
+```bash
+cargo check -p hive_core_testing --all-targets
+cargo test -p hive_core_testing
+cargo fmt --check -p hive_core_testing
 ```
 
 ---
 
-## Phase 5: B-Tree Indexes on Pages
+## Recommended Next Work Order
 
-With pages, B-tree nodes naturally become single pages. This replaces the current in-memory `HashMap`-based indexes with disk-backed B-tree indexes.
+### 1. Finish Database Bootstrap
 
-### Current State (In-Memory HashMaps)
+Goal: opening a new database should create a valid page-based database file.
 
-- `IndexStore` has four `HashMap`-based indexes (label index, property index, edge type index, edge property index)
-- **Persisted to `indexes.hive`** but **rebuilt entirely on every mutation** (O(N) per write)
-- Cannot handle datasets larger than RAM
-- No range queries (HashMaps only support exact-match lookups)
+Tasks:
+- On first open, allocate page 0 or page 1 consistently for meta.
+- Initialize `MetaHeader` with version, page size, db size, counts, roots, freelist head, and LSN.
+- Decide whether page ids start at 0 or 1 and make `META_PAGE_ID` consistent everywhere.
+- Add tests for opening a brand-new DB and reopening it.
 
-### B-Tree Design
+Why first:
+- Every future operation depends on a valid meta page and stable page numbering.
 
-- **Page types**: `IndexInterior` (routing nodes) and `IndexLeaf` (key-value nodes)
-- **Key cells**: Store only `[child_page: u32][key: varint]` — tiny, high fanout
-- **Key-Value cells**: Store `[key: varint][value/rowid: varint]` — actual index entries
-- **Interior pages fit hundreds of keys** → flat tree (few levels) → fast searches
-- **Balance algorithm**: Page split when full, merge when underfull, redistribute among siblings
+---
 
-### Operations
-- `btree_search(key) → value` — traverse interior→leaf, binary search within leaf
-- `btree_insert(key, value)` — insert into leaf, split if full, propagate splits up
-- `btree_delete(key)` — delete from leaf, merge if underfull
-- Range scans: walk leaf pages left-to-right using page chain pointers
+### 2. Define Durable Record IDs
 
-### Benefits Over Current HashMaps
+Goal: `NodeId` and `EdgeId` must locate records inside pages.
 
-| | Current HashMap | B-Tree (Phase 5) |
-|---|---|---|
-| **Memory** | Must fit in RAM | Lives on disk, cached in buffer pool |
-| **Writes** | Full rebuild (O(N)) | Incremental insert/delete (O(log N)) |
-| **Range queries** | Not supported | Supported (leaf page chains) |
-| **Ordered scans** | Not supported | Supported (natural key order) |
-| **Rebalance** | Not applicable | Split/merge/redistribute within pages |
+Possible design:
 
-### Resources
-- **"Database Internals" Ch. 2** — B-tree theory, page splits, rebalancing
-- **SQLite btree.c** — gold standard implementation
-- **Turso/Limbo `btree.rs`** — Rust production implementation (12,817 lines)
-
-### Files to Create
-
+```text
+NodeId/EdgeId = packed u64
+high 32 bits: page_id
+low 16 bits: slot_id
+remaining bits: generation/type flags if needed
 ```
-core/storage/btree.rs              # BTreeCursor, balance algorithm, split/merge
-core/storage/state_machines.rs     # Cursor state machines (seek, insert, delete, balance)
+
+Tasks:
+- Add helpers to pack/unpack IDs.
+- Decide whether IDs include generation counters to detect deleted/reused slots.
+- Add tests for ID encoding and decoding.
+
+Why second:
+- Graph APIs cannot be rebuilt until IDs can point to page records.
+
+---
+
+### 3. Rebuild Node CRUD On Pages
+
+Goal: restore `create_node` and `get_node` using `NodeRecordV2` and slotted pages.
+
+Tasks:
+- Find or allocate a `DataNode` page with enough free space.
+- Encode `NodeRecordV2` into bytes.
+- Insert bytes into page layout.
+- Return packed `NodeId`.
+- Read node by unpacking page id + slot id.
+- Update meta node count.
+- Add tests for create/read/reopen.
+
+Do not rebuild everything at once. Get nodes working first.
+
+---
+
+### 4. Rebuild Edge CRUD And Adjacency
+
+Goal: restore `create_edge` and traversal basics.
+
+Tasks:
+- Store `EdgeRecordV2` in `DataEdge` pages.
+- Set `src`, `dst`, `label_id`, and properties.
+- Decide adjacency model:
+  - linked lists via `first_out_edge`, `first_in_edge`, `next_out_edge`, `next_in_edge`; or
+  - page-backed indexes for adjacency.
+- If using linked lists, update source and destination node records transactionally.
+- Add tests for outgoing, incoming, and undirected traversal.
+
+---
+
+### 5. Rebuild Properties, Labels, And Strings
+
+Goal: make graph records useful beyond raw IDs.
+
+Tasks:
+- Decide how property keys are stored: hash only, dictionary, or inline key table.
+- Store short values inline using existing `Value::to_inline_bytes`.
+- Store long strings in `StringData`/`Overflow` pages.
+- Rebuild label storage using page-backed label pages or a B-tree later.
+- Add tests for string, integer, float, boolean, null, and long string properties.
+
+---
+
+### 6. Integrate WAL Commit Correctly
+
+Goal: writes must be recoverable after crash.
+
+Tasks:
+- Transaction starts with `Begin` WAL entry.
+- Dirty pages get page LSNs.
+- Dirty page images are appended to WAL.
+- WAL is synced before pages are flushed to `hive.db`.
+- Commit entry is appended and synced according to durability policy.
+- Recovery replays committed page images.
+- Add crash-style tests using WAL files and reopened DBs.
+
+---
+
+### 7. Rebuild Query Executor
+
+Goal: examples can become true end-to-end examples again.
+
+Tasks:
+- Execute `QueryPlan::CreateNode`.
+- Execute `QueryPlan::CreateRelationship`.
+- Execute `ScanNodes` using full page scan first.
+- Execute `TraverseEdges` using adjacency.
+- Execute filters and returns.
+- Keep index hints ignored at first, then use them after B-tree indexes exist.
+
+---
+
+### 8. B-Tree Indexes On Pages
+
+Goal: replace old in-memory/hashmap index direction with durable page indexes.
+
+Tasks:
+- Implement index interior and leaf pages.
+- Exact-match property lookup.
+- Label lookup.
+- Edge type lookup.
+- Later: range scans and statistics.
+
+This should come after basic graph CRUD and full scans work.
+
+---
+
+### 9. Concurrency, Async I/O, MVCC, Compaction
+
+These are later phases after correctness.
+
+Order:
+1. Coarse `Arc<RwLock<HiveDb>>` wrapper.
+2. Page-level locks inside pager.
+3. Async/background checkpointing.
+4. MVCC snapshots.
+5. Page compaction and space reclamation.
+
+Do not start these until storage, WAL, graph CRUD, and executor basics are correct.
+
+---
+
+## Current Architecture Map
+
+```text
+bindings/rust
+  public hive crate, currently re-exports hive_core
+
+core/db
+  HiveDb open/close only
+  old index store stubbed for future B-tree
+
+core/storage
+  buffer_pool.rs      reusable 4KB buffers
+  page_cache.rs       page cache + eviction metadata
+  pager.rs            page I/O + cache/pool coordinator
+  page/format.rs      page headers, meta header, page types
+  page/layout.rs      slotted page operations
+  page/record.rs      NodeRecordV2, EdgeRecordV2, PropertyRecordV2
+  page/serializer.rs  byte helpers, varints, checksum
+
+core/wal
+  physical WAL entries and redo recovery
+
+core/query
+  parser/planner available
+  executor stubbed until graph APIs return
+
+testing/rust
+  page storage, cache, buffer pool, record, serializer, WAL tests
 ```
 
 ---
 
-## Phase 6: Page-Level Locking — Fine-Grained Concurrency
+## Mental Model
 
-**Purpose**: Allow multiple writers to modify different pages simultaneously. This is the real performance unlock for write-heavy workloads.
+Think of the rebuild like this:
 
-### How It Works
+```text
+Old Hive:
+  HiveDb -> NodeStore/EdgeStore/PropertyStore -> many files
 
-Instead of locking the entire `HiveDb` with a single `RwLock`, each page has its own lock:
-
-```
-Phase 4 (coarse):                        Phase 6 (fine-grained):
-┌─────────────────────┐                  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐
-│   RwLock<HiveDb>    │                  │Page1│ │Page2│ │Page3│ │Page4│
-│                     │                  │Lock │ │Lock │ │Lock │ │Lock │
-│ all pages locked    │                  └──┬──┘ └──┬──┘ └──┬──┘ └──┬──┘
-│ as one unit         │                    │       │       │       │
-└─────────────────────┘               Writer A  Writer B  Reader C  Free
-
-Writer waits for ALL          Writer A locks only page 1, Writer B locks only page 2
-readers & other writers       No conflict — run in parallel!
+New Hive:
+  HiveDb -> Transaction -> Pager -> PageCache -> BufferPool -> hive.db
+                         -> WAL -> wal.hive
 ```
 
-### Implementation
-
-```rust
-// Each page has its own RwLock in the pager
-pub fn write_page(&self, pgno: usize) -> Result<PageWriteGuard<'_>> {
-    let lock = self.page_locks.get(pgno);
-    let guard = lock.write().unwrap();
-    // ... modify page ...
-    Ok(guard)  // lock released on drop
-}
-
-pub fn read_page(&self, pgno: usize) -> Result<PageReadGuard<'_>> {
-    let lock = self.page_locks.get(pgno);
-    let guard = lock.read().unwrap();
-    // ... read page ...
-    Ok(guard)  // lock released on drop
-}
-```
-
-### Locking Rules
-
-1. **Read pages**: Acquire read lock — multiple readers OK on same page
-2. **Modify pages**: Acquire write lock — exclusive access to that page
-3. **B-tree balance**: Locks 2-5 sibling pages (must lock in ascending page number order to prevent deadlocks)
-4. **Freelist**: Separate lock for the freelist trunk page (allocation/freeing)
-5. **WAL append**: Single writer to the WAL (append-only, sequential by nature)
-
-### Concurrency Model
-
-```
-Writer A:  [lock pg5] ── write pg5 ── [unlock] ── [lock pg12] ── write pg12 ── [unlock]
-
-Writer B:     [lock pg8] ── write pg8 ── [unlock]  ← parallel with Writer A!
-
-Reader C:  [lock pg5] ── read pg5 ── [unlock]  ← blocks briefly if Writer A holds pg5
-```
-
-### Resources
-- **BoltDB** — page-level locking in Go (single writer, concurrent readers per page)
-- **InnoDB** — row-level locking with intention locks at the page level
-
-### Files to Modify
-
-```
-core/storage/pager.rs       # Add page-level lock map (RwLock per page)
-core/db/hive_db.rs          # Remove outer RwLock (now inside pager)
-```
+The important shift is that graph concepts are no longer files. Nodes, edges, properties, labels, strings, indexes, and freelist entries are all records inside typed pages.
 
 ---
 
-## Phase 7: Async I/O
+## Definition Of Done For The Rebuild
 
-**Purpose**: Do disk I/O in the background — checkpoint, WAL sync, page reads — without blocking query execution.
+Minimum working database:
+- New DB opens and initializes meta page.
+- Nodes can be created, read, and reopened from disk.
+- Edges can be created, read, and traversed.
+- Properties survive reopen.
+- WAL recovers committed dirty pages.
+- Query executor supports basic `CREATE` and `MATCH`.
+- Examples are end-to-end again.
 
-### What Becomes Async?
-
-| Operation | Current (sync) | Async (Phase 7) |
-|-----------|----------------|------------------|
-| **Read page from disk** | Blocks thread until read(4KB) returns | Issue read, yield thread, resume when OS completes I/O |
-| **WAL fsync** | Blocks thread on every commit | Background thread flushes periodically |
-| **Checkpoint** | Blocks while copying WAL→DB | Runs in background, DB stays responsive |
-| **Flush dirty pages** | Blocks on write | Issue writes, track completions |
-
-### Why Not Start With Async?
-
-- Async adds significant complexity (state machines, IO completion tracking)
-- Turso/Limbo uses `io_uring` (Linux-only) — Hive targets macOS/Windows too
-- Single-threaded synchronous is correct first, async is optimization after
-- Phases 1-6 give correct concurrent behavior; Phase 7 makes it faster
-
-### Approach
-
-Turso/Limbo uses a **linear chain of callbacks** (`IOResult<T>` enum with `Done(T)` and `IO(completions)` variants). The `io_uring` submit/completion loop drives these state machines. Hive can use a simpler model:
-
-```rust
-// Simple async via tokio or custom thread pool
-impl Pager {
-    pub async fn read_page_async(&self, pgno: usize) -> Result<PageRef> {
-        if let Some(page) = self.page_cache.get(pgno) {
-            return Ok(page);  // Cache hit — sync return
-        }
-        // Cache miss — async disk read
-        let buf = self.buffer_pool.acquire()?;
-        self.db_file.read_at(pgno * PAGE_SIZE, &mut buf).await?;
-        self.page_cache.insert(pgno, buf);
-        Ok(self.page_cache.get(pgno).unwrap())
-    }
-}
-```
-
-### Resources
-- **Turso/Limbo `pager.rs`** — async state machines with `IOResult<T>`
-- **io_uring** — Linux zero-copy async I/O (Phase 7-advanced)
-- **Tokio** — Rust async runtime (Phase 7-basic, cross-platform)
-
-### Files to Create/Modify
-
-```
-core/io/
-├── mod.rs              # I/O abstraction (sync + async backends)
-├── sync_io.rs          # Current synchronous I/O
-└── async_io.rs         # Future async I/O (tokio)
-```
+Production-ready direction:
+- Durable indexes on B-tree pages.
+- Checkpointing and WAL truncation.
+- Freelist and page reuse.
+- Long string/overflow pages.
+- Page compaction.
+- Coarse then fine-grained concurrency.
+- Async I/O and MVCC only after the synchronous engine is correct.
 
 ---
 
-## Phase 8: MVCC — True Concurrent Reads + Writes
+## References To Study
 
-**Purpose**: Readers never wait for writers, writers never wait for readers. Each transaction sees a consistent snapshot of the database.
-
-### The Problem MVCC Solves
-
-Even with page-level locking (Phase 6), a writer blocks readers on the same page. MVCC lets readers see the **old version** while the writer creates a **new version** on a different page.
-
-```
-WITHOUT MVCC (Phase 6):
-  Writer: [modify page 5] ──── DONE
-  Reader:          [want page 5... WAIT... OK now read]  ← BLOCKED
-
-WITH MVCC (Phase 8):
-  Writer: [copy pg5→pg99] [modify pg99] ── DONE
-  Reader: [read pg5 (old version)] ── DONE            ← NO WAIT
-          (reader's snapshot points to old page, writer's new page is pg99)
-```
-
-### Key Concepts
-
-- **LSN (Log Sequence Number)**: Every page header has an LSN. Every transaction gets a snapshot LSN.
-- **Reader's view**: Only pages with LSN ≤ snapshot LSN are visible. Newer pages are invisible.
-- **Writer's view**: Creates new page versions with incremented LSN. Old versions stay until no reader needs them.
-- **Garbage collection**: Old page versions are freed when the oldest active transaction's snapshot advances past them.
-
-### Version Chain
-
-```
-Page 5 version history:
-┌─────────┐     ┌─────────┐     ┌─────────┐
-│ v1      │────▶│ v2      │────▶│ v3      │  (newest)
-│ LSN=10  │     │ LSN=15  │     │ LSN=22  │
-│ active  │     │ active  │     │ active  │
-│ for txns│     │ for txns│     │ for txns│
-│ < LSN15 │     │ < LSN22 │     │ ≥ LSN22 │
-└─────────┘     └─────────┘     └─────────┘
-     ↑               ↑               ↑
-   Reader A       Reader B       Reader C
-   (snap=12)      (snap=18)      (snap=30)
-   sees v1        sees v2        sees v3
-```
-
-### Implementation
-
-```rust
-pub struct Transaction {
-    snapshot_lsn: u32,          // Which version of the DB this txn sees
-    modified_pages: Vec<PageRef>, // New versions created by this txn
-}
-
-impl Pager {
-    // Read a page as seen by a specific snapshot
-    pub fn read_page_for_snapshot(&self, pgno: usize, snapshot_lsn: u32) -> Result<PageRef>;
-    
-    // Write a page — creates a new version
-    pub fn write_page(&self, pgno: usize, txn: &Transaction) -> Result<PageRef>;
-}
-```
-
-### Resources
-- **PostgreSQL MVCC** — tuple-level visibility, xmin/xmax, snapshot isolation
-- **InnoDB MVCC** — undo log chains, read views
-- **"Database Internals" Ch. 5** — MVCC theory
-
-### Files to Create
-
-```
-core/mvcc/
-├── mod.rs              # MVCC module
-├── transaction.rs      # Transaction with snapshot LSN
-├── visibility.rs       # Determine which page version is visible
-└── gc.rs               # Garbage collect old page versions
-```
-
----
-
-## Phase 9: Compaction & Space Reclamation
-
-### What Needs Compaction
-
-| Resource | Current Problem | Solution |
-|----------|----------------|----------|
-| **Data pages** | Deleting records leaves freeblocks and fragmentation | `compact_page()` — move live records together, reset free space offset |
-| **String store** | Append-only, strings never deleted, grows forever | Mark-and-sweep GC: identify live strings via property records, rewrite store |
-| **WAL** | Grows between checkpoints | Auto-checkpoint: flush to DB file when WAL exceeds threshold (e.g., 1000 pages) |
-| **Freelist** | Tracks freed pages | Already works via trunk/leaf linked list; needs integration with page allocator |
-
-### Strategies
-- **Lazy compaction**: Compact a page only when free space falls below a threshold (e.g., < 20% usable)
-- **Background compaction**: Run in a background thread (after Phase 7 async I/O)
-- **Online compaction**: Don't block queries during compaction — compact a page by copying live records to a new page, then swap the page atomically
-
-### Resources
-- **LSM compaction strategies** — leveled, tiered (alternative approach)
-- **Free-space management in filesystems** — buddy allocator, slab allocator
-- **PostgreSQL VACUUM** — how they handle dead tuple cleanup
-
----
-
-## Phase 10: Query Optimization
-
-- **Cost-based optimization** — PostgreSQL's planner
-- **Predicate pushdown** — filter as early as possible (at the buffer pool level)
-- **Join ordering** — choose the best traversal order for multi-hop queries
-- **Query plan caching** — cache compiled plans for repeated queries
-- **Index selection** — choose the best index based on statistics (cardinality, selectivity)
-
----
-
-## Summary: Action Items (Dependency Order)
-
-| # | Phase | Depends On | Unlocks |
-|---|-------|------------|---------|
-| 1 | Page-Based Storage | — | Everything below |
-| 2 | Buffer Pool + Page Cache | Phase 1 | Caching, WAL integration |
-| 3 | Physical WAL + Crash Recovery | Phase 2 | Durability, rollback |
-| 4 | Arc\<RwLock\<HiveDb\>\> | Phase 3 | **Concurrent readers** |
-| 5 | B-Tree Indexes on Pages | Phase 3 | Range queries, incremental index |
-| 6 | Page-Level Locking | Phase 4 | **Concurrent writers** |
-| 7 | Async I/O | Phase 6 | Background checkpoint, non-blocking I/O |
-| 8 | MVCC | Phase 7 | **Readers never block on writers** |
-| 9 | Compaction | Phase 6 | Space reclamation |
-| 10 | Query Optimization | Phase 5 | Cost-based plans, predicate pushdown |
-
-## Resources
-
-1. **"Database Internals"** — storage internals (page layout Ch. 5-6, buffer pool Ch. 5, recovery Ch. 7-8)
-2. **"Designing Data-Intensive Applications"** — broader systems perspective (Kleppmann)
-3. **CMU 15-445** (free on YouTube) — Andy Pavlo's database course
-4. **SQLite source code** — `btree.c` and `wal.c` (gold standard for embedded DBs)
-5. **LMDB / BoltDB source** — embedded DBs with memory-mapped approaches
-6. **PostgreSQL source** — `bufpage.h`, `page.h` for page layout reference
-7. **Turso/Limbo source** — Rust SQLite rewrite; `pager.rs`, `btree.rs`, `page_cache.rs` (reference implementation)
-8. **Hive Understanding.md** — detailed page format design with architectural diagrams
+1. Database Internals, chapters on storage, buffer management, and WAL.
+2. SQLite page format, btree, and WAL documentation.
+3. PostgreSQL page layout and buffer manager references.
+4. CMU 15-445 storage, buffer pool, and recovery lectures.
+5. Turso/Limbo pager, page cache, and btree code for Rust design ideas.
+6. Designing Data-Intensive Applications for high-level storage engine tradeoffs.

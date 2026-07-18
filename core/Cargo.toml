@@ -14,10 +14,3 @@ path = "lib.rs"
 [dependencies]
 hive_parser.workspace = true
 crc32fast.workspace = true
-
-[dev-dependencies]
-criterion.workspace = true
-
-[[bench]]
-name = "hive_bench"
-harness = false
