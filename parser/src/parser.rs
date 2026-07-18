@@ -27,14 +27,11 @@ impl<'a> Parser<'a> {
 
     fn advance(&mut self) -> Token<'a> {
         let prev = self.current.clone();
-        self.current = self
-            .lexer
-            .next_token()
-            .unwrap_or_else(|_| Token {
-                kind: TokenType::Eof,
-                span: Span::new(self.current.span.end, self.current.span.end),
-                text: "",
-            });
+        self.current = self.lexer.next_token().unwrap_or_else(|_| Token {
+            kind: TokenType::Eof,
+            span: Span::new(self.current.span.end, self.current.span.end),
+            text: "",
+        });
         prev
     }
 

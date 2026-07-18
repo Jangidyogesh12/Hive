@@ -30,17 +30,17 @@ pub enum TokenType {
     Semicolon, // ;
 
     // Operators
-    Eq,          // =
-    Neq,         // <>
-    Gt,          // >
-    Gte,         // >=
-    Lt,          // <
-    Lte,         // <=
-    ArrowRight,  // ->
-    ArrowLeft,   // <-
-    Dash,        // -
-    Star,        // *
-    DotDot,      // ..
+    Eq,         // =
+    Neq,        // <>
+    Gt,         // >
+    Gte,        // >=
+    Lt,         // <
+    Lte,        // <=
+    ArrowRight, // ->
+    ArrowLeft,  // <-
+    Dash,       // -
+    Star,       // *
+    DotDot,     // ..
 
     // Literals & Identifiers
     Integer(i64),
@@ -54,7 +54,10 @@ pub enum TokenType {
 
 impl TokenType {
     pub fn is_literal(&self) -> bool {
-        matches!(self, TokenType::Integer(_) | TokenType::Float(_) | TokenType::StringLit(_))
+        matches!(
+            self,
+            TokenType::Integer(_) | TokenType::Float(_) | TokenType::StringLit(_)
+        )
     }
 }
 
