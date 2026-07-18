@@ -1,7 +1,7 @@
 use crate::errors::DbError;
 use crate::storage::pager::Pager;
+use crate::wal::Wal;
 use crate::wal::recovery::{RecoveryManager, RecoveryOutcome};
-use crate::wal::wal::Wal;
 use std::{fs, path::Path};
 
 pub struct HiveDb {
