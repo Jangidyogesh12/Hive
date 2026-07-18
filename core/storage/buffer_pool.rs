@@ -12,6 +12,7 @@ pub struct BufferPool {
 }
 
 impl BufferPool {
+    /// Creates a pool pre-filled with zeroed page-sized buffers.
     pub fn new(capacity: usize) -> Self {
         let mut free = Vec::with_capacity(capacity);
         for _ in 0..capacity {
@@ -20,18 +21,22 @@ impl BufferPool {
         Self { capacity, free }
     }
 
+    /// Returns the maximum number of page buffers this pool can hold.
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
+    /// Returns how many buffers are currently free for reuse.
     pub fn available(&self) -> usize {
         self.free.len()
     }
 
+    /// Returns how many buffers are currently checked out by callers.
     pub fn used(&self) -> usize {
         self.capacity - self.available()
     }
 
+    /// Takes one zeroed page buffer from the pool.
     pub fn acquire(&mut self) -> Option<PageBuffer> {
         self.free.pop().map(|mut buffer| {
             buffer.fill(0);
@@ -39,6 +44,7 @@ impl BufferPool {
         })
     }
 
+    /// Returns a page buffer to the pool after clearing its old contents.
     pub fn release(&mut self, mut buffer: PageBuffer) {
         buffer.fill(0);
         self.free.push(buffer);

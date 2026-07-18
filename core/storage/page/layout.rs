@@ -9,48 +9,58 @@ use super::record::SlotIndex;
 use super::serializer;
 use crate::errors::DbError;
 
+/// Initializes page 0 as the database metadata page.
 pub fn init_meta_page(buf: &mut [u8; PAGE_SIZE], meta: &MetaHeader) {
     buf.fill(0);
     meta.to_bytes(buf);
 }
 
+/// Initializes a non-meta page with an empty slot table and content area.
 pub fn init_regular_page(buf: &mut [u8; PAGE_SIZE], page_type: PageType) {
     buf.fill(0);
     let header = PageHeader::new(page_type);
     header.to_bytes(buf);
 }
 
+/// Reads the regular-page header fields from a page buffer.
 pub fn read_page_header(buf: &[u8; PAGE_SIZE]) -> PageHeader {
     PageHeader::from_bytes(buf)
 }
 
+/// Reads the database metadata header from the meta page buffer.
 pub fn read_meta_header(buf: &[u8; PAGE_SIZE]) -> MetaHeader {
     MetaHeader::from_bytes(buf)
 }
 
+/// Writes regular-page header fields into a page buffer.
 pub fn write_page_header(buf: &mut [u8; PAGE_SIZE], header: &PageHeader) {
     header.to_bytes(buf);
 }
 
+/// Writes database metadata fields into the meta page buffer.
 pub fn write_meta_header(buf: &mut [u8; PAGE_SIZE], meta: &MetaHeader) {
     meta.to_bytes(buf);
 }
 
+/// Recomputes and stores the page checksum after page bytes change.
 pub fn update_checksum(buf: &mut [u8; PAGE_SIZE]) {
     let cs = serializer::compute_checksum(buf, PageHeader::CHECKSUM_START, PAGE_SIZE);
     serializer::put_u32_le(buf, 8, cs);
 }
 
+/// Checks whether the stored page checksum matches the current page bytes.
 pub fn verify_checksum(buf: &[u8; PAGE_SIZE]) -> bool {
     let stored = serializer::get_u32_le(buf, 8);
     let computed = serializer::compute_checksum(buf, PageHeader::CHECKSUM_START, PAGE_SIZE);
     stored == computed
 }
 
+/// Computes the byte offset of a slot-table entry for a slot index.
 pub fn slot_offset(slot_idx: u16, content_start: usize) -> usize {
     content_start + (slot_idx as usize) * SLOT_ENTRY_SIZE
 }
 
+/// Returns where the slot table starts for meta pages versus regular pages.
 fn content_start_for_page(buf: &[u8; PAGE_SIZE]) -> usize {
     let page_type = serializer::get_u8(buf, 0);
     if page_type == PageType::Meta as u8 {
@@ -60,6 +70,7 @@ fn content_start_for_page(buf: &[u8; PAGE_SIZE]) -> usize {
     }
 }
 
+/// Returns contiguous free bytes between the slot table and record content area.
 pub fn get_free_space(buf: &[u8; PAGE_SIZE]) -> usize {
     let header = read_page_header(buf);
     let content_start = content_start_for_page(buf);
@@ -68,6 +79,7 @@ pub fn get_free_space(buf: &[u8; PAGE_SIZE]) -> usize {
     free_offset.saturating_sub(slot_end)
 }
 
+/// Inserts record bytes into a slotted page and returns the new slot index.
 pub fn insert_record(buf: &mut [u8; PAGE_SIZE], record_bytes: &[u8]) -> Result<SlotIndex, DbError> {
     let mut header = read_page_header(buf);
     let content_start = content_start_for_page(buf);
@@ -99,6 +111,7 @@ pub fn insert_record(buf: &mut [u8; PAGE_SIZE], record_bytes: &[u8]) -> Result<S
     Ok(SlotIndex(header.slot_count - 1))
 }
 
+/// Returns a borrowed slice for the live record stored at a slot index.
 pub fn read_record_bytes(buf: &[u8; PAGE_SIZE], slot_idx: u16) -> Option<&[u8]> {
     let header = read_page_header(buf);
     if slot_idx >= header.slot_count {
@@ -118,10 +131,12 @@ pub fn read_record_bytes(buf: &[u8; PAGE_SIZE], slot_idx: u16) -> Option<&[u8]> 
     Some(&buf[start..end])
 }
 
+/// Returns an owned copy of the record stored at a slot index.
 pub fn read_record(buf: &[u8; PAGE_SIZE], slot_idx: u16) -> Option<Vec<u8>> {
     read_record_bytes(buf, slot_idx).map(|s| s.to_vec())
 }
 
+/// Marks a record slot dead and links its payload space into the freeblock list.
 pub fn delete_record(buf: &mut [u8; PAGE_SIZE], slot_idx: u16) -> Result<(), DbError> {
     let header = read_page_header(buf);
     if slot_idx >= header.slot_count {
@@ -140,6 +155,7 @@ pub fn delete_record(buf: &mut [u8; PAGE_SIZE], slot_idx: u16) -> Result<(), DbE
     Ok(())
 }
 
+/// Adds deleted record space to the page-local freeblock chain.
 fn add_to_freeblock(
     buf: &mut [u8; PAGE_SIZE],
     offset: usize,
@@ -170,11 +186,13 @@ fn add_to_freeblock(
     Ok(())
 }
 
+/// Writes a freeblock header: payload length plus next-freeblock pointer.
 fn write_freeblock_header(buf: &mut [u8; PAGE_SIZE], offset: usize, length: usize, next: u16) {
     serializer::put_u16_le(buf, offset, length as u16);
     serializer::put_u16_le(buf, offset + 2, next);
 }
 
+/// Rewrites live records contiguously to recover fragmented free space.
 pub fn compact_page(buf: &mut [u8; PAGE_SIZE]) -> Result<(), DbError> {
     let header = read_page_header(buf);
     let content_start = content_start_for_page(buf);
@@ -235,6 +253,7 @@ pub fn compact_page(buf: &mut [u8; PAGE_SIZE]) -> Result<(), DbError> {
     Ok(())
 }
 
+/// Counts slots that still point to live records.
 pub fn live_slot_count(buf: &[u8; PAGE_SIZE]) -> usize {
     let header = read_page_header(buf);
     let content_start = content_start_for_page(buf);

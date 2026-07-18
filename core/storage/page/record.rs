@@ -49,6 +49,7 @@ const EDGE_FIXED_PREFIX: usize = 63;
 const PROPERTY_ENTRY_BASE_SIZE: usize = 25;
 
 impl NodeRecordV2 {
+    /// Creates an empty node record with no label, edges, or properties yet.
     pub fn new(id: u64) -> Self {
         Self {
             id,
@@ -61,6 +62,7 @@ impl NodeRecordV2 {
         }
     }
 
+    /// Returns the exact number of bytes needed to serialize this node record.
     pub fn encoded_size(&self) -> usize {
         let props_size: usize = self
             .properties
@@ -70,6 +72,7 @@ impl NodeRecordV2 {
         NODE_FIXED_PREFIX + props_size
     }
 
+    /// Returns extra bytes needed by a property entry's non-inline value.
     fn property_value_size(&self, entry: &PropertyEntry) -> usize {
         match entry.value_type {
             value::LONG_STRING => serializer::var_int_size(entry.long_value_offset),
@@ -77,6 +80,7 @@ impl NodeRecordV2 {
         }
     }
 
+    /// Serializes this node record into the provided output buffer.
     pub fn to_bytes(&self, buf: &mut [u8]) -> Result<usize, DbError> {
         let size = self.encoded_size();
         if buf.len() < size {
@@ -116,6 +120,7 @@ impl NodeRecordV2 {
         Ok(size)
     }
 
+    /// Deserializes a node record from bytes read from a page slot.
     pub fn from_bytes(buf: &[u8]) -> Result<Self, DbError> {
         if buf.len() < NODE_FIXED_PREFIX {
             return Err(DbError::ReadError);
@@ -179,6 +184,7 @@ impl NodeRecordV2 {
 }
 
 impl EdgeRecordV2 {
+    /// Creates an empty edge record whose endpoints and chain links are unset.
     pub fn new(id: u64) -> Self {
         Self {
             id,
@@ -193,6 +199,7 @@ impl EdgeRecordV2 {
         }
     }
 
+    /// Returns the exact number of bytes needed to serialize this edge record.
     pub fn encoded_size(&self) -> usize {
         let props_size: usize = self
             .properties
@@ -202,6 +209,7 @@ impl EdgeRecordV2 {
         EDGE_FIXED_PREFIX + props_size
     }
 
+    /// Returns extra bytes needed by a property entry's non-inline value.
     fn property_value_size(&self, entry: &PropertyEntry) -> usize {
         match entry.value_type {
             value::LONG_STRING => serializer::var_int_size(entry.long_value_offset),
@@ -209,6 +217,7 @@ impl EdgeRecordV2 {
         }
     }
 
+    /// Serializes this edge record into the provided output buffer.
     pub fn to_bytes(&self, buf: &mut [u8]) -> Result<usize, DbError> {
         let size = self.encoded_size();
         if buf.len() < size {
@@ -252,6 +261,7 @@ impl EdgeRecordV2 {
         Ok(size)
     }
 
+    /// Deserializes an edge record from bytes read from a page slot.
     pub fn from_bytes(buf: &[u8]) -> Result<Self, DbError> {
         if buf.len() < EDGE_FIXED_PREFIX {
             return Err(DbError::ReadError);
@@ -323,6 +333,7 @@ impl EdgeRecordV2 {
 impl PropertyRecordV2 {
     pub const SIZE: usize = 56;
 
+    /// Creates an empty property record with unset key/value links.
     pub fn new(id: u64) -> Self {
         Self {
             id,
@@ -336,10 +347,12 @@ impl PropertyRecordV2 {
         }
     }
 
+    /// Returns the fixed serialized size of a property record.
     pub fn encoded_size(&self) -> usize {
         Self::SIZE
     }
 
+    /// Serializes this property record into the provided output buffer.
     pub fn to_bytes(&self, buf: &mut [u8]) -> Result<usize, DbError> {
         if buf.len() < Self::SIZE {
             return Err(DbError::WriteError);
@@ -356,6 +369,7 @@ impl PropertyRecordV2 {
         Ok(Self::SIZE)
     }
 
+    /// Deserializes a property record from bytes read from a page slot.
     pub fn from_bytes(buf: &[u8]) -> Result<Self, DbError> {
         if buf.len() < Self::SIZE {
             return Err(DbError::ReadError);

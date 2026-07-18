@@ -36,6 +36,7 @@ use crate::errors::DbError;
 
 pub const MAX_VARINT_BYTES: usize = 10;
 
+/// Returns how many bytes are needed to encode a `u64` as a varint.
 pub fn var_int_size(value: u64) -> usize {
     match value {
         0..=127 => 1,
@@ -51,6 +52,7 @@ pub fn var_int_size(value: u64) -> usize {
     }
 }
 
+/// Encodes a `u64` into the buffer using little-endian base-128 varint format.
 pub fn var_int_write(buf: &mut [u8], value: u64) -> usize {
     let mut v = value;
     let mut i = 0;
@@ -69,6 +71,7 @@ pub fn var_int_write(buf: &mut [u8], value: u64) -> usize {
     }
     i
 }
+/// Decodes a varint from the buffer and returns the value plus bytes consumed.
 pub fn var_int_read(buf: &[u8]) -> Result<(u64, usize), DbError> {
     let mut value: u64 = 0;
     let mut shift: u32 = 0;
@@ -88,31 +91,37 @@ pub fn var_int_read(buf: &[u8]) -> Result<(u64, usize), DbError> {
     Err(DbError::ReadError)
 }
 
+/// Writes one byte at an offset in a raw page/record buffer.
 #[inline]
 pub fn put_u8(buf: &mut [u8], offset: usize, value: u8) {
     buf[offset] = value;
 }
 
+/// Reads one byte at an offset in a raw page/record buffer.
 #[inline]
 pub fn get_u8(buf: &[u8], offset: usize) -> u8 {
     buf[offset]
 }
 
+/// Writes a little-endian `u16` at an offset in a raw buffer.
 #[inline]
 pub fn put_u16_le(buf: &mut [u8], offset: usize, value: u16) {
     buf[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
 }
 
+/// Reads a little-endian `u16` at an offset in a raw buffer.
 #[inline]
 pub fn get_u16_le(buf: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([buf[offset], buf[offset + 1]])
 }
 
+/// Writes a little-endian `u32` at an offset in a raw buffer.
 #[inline]
 pub fn put_u32_le(buf: &mut [u8], offset: usize, value: u32) {
     buf[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
+/// Reads a little-endian `u32` at an offset in a raw buffer.
 #[inline]
 pub fn get_u32_le(buf: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes([
@@ -123,11 +132,13 @@ pub fn get_u32_le(buf: &[u8], offset: usize) -> u32 {
     ])
 }
 
+/// Writes a little-endian `u64` at an offset in a raw buffer.
 #[inline]
 pub fn put_u64_le(buf: &mut [u8], offset: usize, value: u64) {
     buf[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
+/// Reads a little-endian `u64` at an offset in a raw buffer.
 #[inline]
 pub fn get_u64_le(buf: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes([
@@ -142,6 +153,7 @@ pub fn get_u64_le(buf: &[u8], offset: usize) -> u64 {
     ])
 }
 
+/// Computes a CRC32 checksum over the selected byte range.
 pub fn compute_checksum(buf: &[u8], start: usize, end: usize) -> u32 {
     let mut hasher = crc32fast::Hasher::new();
     hasher.update(&buf[start..end]);

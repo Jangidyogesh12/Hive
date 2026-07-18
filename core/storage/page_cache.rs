@@ -27,10 +27,12 @@ pub struct CachedPage {
 }
 
 impl CachedPage {
+    /// Returns the logical page number stored in this cache entry.
     pub fn page_id(&self) -> PageId {
         self.page_id
     }
 
+    /// Returns read-only access to the cached page bytes.
     pub fn data(&self) -> &[u8; PAGE_SIZE] {
         &self.buffer
     }
@@ -45,14 +47,17 @@ impl CachedPage {
         &mut self.buffer
     }
 
+    /// Returns how many callers currently protect this page from eviction.
     pub fn pin_count(&self) -> usize {
         self.pin_count
     }
 
+    /// Returns whether the cached page contains changes not yet written to disk.
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
 
+    /// Returns whether a dirty page image has already been copied to WAL.
     pub fn is_spilled(&self) -> bool {
         self.spilled
     }
@@ -109,6 +114,7 @@ pub struct PageCache {
 }
 
 impl PageCache {
+    /// Creates an empty page cache with room for `capacity` pages.
     pub fn new(capacity: usize) -> Self {
         Self {
             capacity,
@@ -117,18 +123,22 @@ impl PageCache {
         }
     }
 
+    /// Returns the maximum number of pages that can be resident in this cache.
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
+    /// Returns the number of pages currently resident in memory.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    /// Returns whether the cache currently contains no pages.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    /// Returns whether a page id already has a resident cache entry.
     pub fn contains(&self, page_id: PageId) -> bool {
         self.entries.contains_key(&page_id)
     }
@@ -165,18 +175,21 @@ impl PageCache {
         Ok(())
     }
 
+    /// Marks a cached page dirty after its contents were modified.
     pub fn mark_dirty(&mut self, page_id: PageId) -> Result<(), DbError> {
         let page = self.entries.get_mut(&page_id).ok_or(DbError::ReadError)?;
         page.mark_dirty();
         Ok(())
     }
 
+    /// Marks a cached page clean after it has been written durably.
     pub fn mark_clean(&mut self, page_id: PageId) -> Result<(), DbError> {
         let page = self.entries.get_mut(&page_id).ok_or(DbError::ReadError)?;
         page.mark_clean();
         Ok(())
     }
 
+    /// Marks a dirty page as safe to evict because its image exists in WAL.
     pub fn mark_spilled(&mut self, page_id: PageId) -> Result<(), DbError> {
         let page = self.entries.get_mut(&page_id).ok_or(DbError::ReadError)?;
         page.mark_spilled();

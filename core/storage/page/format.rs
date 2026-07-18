@@ -24,6 +24,7 @@ pub enum PageType {
 }
 
 impl PageType {
+    /// Converts the on-disk page type byte into a known page type.
     pub fn from_u8(byte: u8) -> Option<Self> {
         match byte {
             0x00 => Some(Self::Meta),
@@ -58,6 +59,7 @@ impl PageHeader {
 
     pub const CHECKSUM_START: usize = 12;
 
+    /// Creates a new empty regular-page header for the given page kind.
     pub fn new(page_type: PageType) -> Self {
         Self {
             page_type,
@@ -71,6 +73,7 @@ impl PageHeader {
         }
     }
 
+    /// Decodes a regular-page header from the beginning of a page buffer.
     pub fn from_bytes(buf: &[u8]) -> Self {
         Self {
             page_type: PageType::from_u8(serializer::get_u8(buf, 0)).unwrap_or(PageType::DataNode),
@@ -84,6 +87,7 @@ impl PageHeader {
         }
     }
 
+    /// Encodes this regular-page header into the beginning of a page buffer.
     pub fn to_bytes(&self, buf: &mut [u8]) {
         buf[0..REGULAR_HEADER_SIZE].fill(0);
         serializer::put_u8(buf, 0, self.page_type as u8);
@@ -116,6 +120,7 @@ pub struct MetaHeader {
 }
 
 impl MetaHeader {
+    /// Creates the initial database metadata header for a new Hive database.
     pub fn new() -> Self {
         Self {
             magic: HIVE_MAGIC,
@@ -136,6 +141,7 @@ impl MetaHeader {
         }
     }
 
+    /// Decodes the database metadata header from page 0 bytes.
     pub fn from_bytes(buf: &[u8]) -> Self {
         let mut magic = [0u8; 16];
         magic.copy_from_slice(&buf[0..16]);
@@ -158,6 +164,7 @@ impl MetaHeader {
         }
     }
 
+    /// Encodes the database metadata header into page 0 bytes.
     pub fn to_bytes(&self, buf: &mut [u8]) {
         buf[0..META_HEADER_SIZE].fill(0);
         buf[0..16].copy_from_slice(&self.magic);
@@ -192,15 +199,18 @@ pub struct SlotEntry {
 impl SlotEntry {
     pub const DEAD: u16 = 0;
 
+    /// Creates a slot-table entry pointing to one record payload inside a page.
     pub fn new(offset: u16, length: u16) -> Self {
         Self { offset, length }
     }
 
+    /// Returns whether this slot has been deleted and no longer points to a record.
     #[inline]
     pub fn is_dead(&self) -> bool {
         self.offset == Self::DEAD
     }
 
+    /// Decodes a slot-table entry from its 4-byte on-page representation.
     pub fn from_bytes(buf: &[u8]) -> Self {
         Self {
             offset: serializer::get_u16_le(buf, 0),
@@ -208,6 +218,7 @@ impl SlotEntry {
         }
     }
 
+    /// Encodes this slot-table entry into its 4-byte on-page representation.
     pub fn to_bytes(&self, buf: &mut [u8]) {
         serializer::put_u16_le(buf, 0, self.offset);
         serializer::put_u16_le(buf, 2, self.length);
