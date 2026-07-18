@@ -96,7 +96,7 @@ impl<'a> Lexer<'a> {
             if ch.is_ascii_digit() {
                 self.advance();
             } else if ch == '.' && !is_float {
-                if self.peek_ahead(1).map_or(false, |c| c.is_ascii_digit()) {
+                if self.peek_ahead(1).is_some_and(|c| c.is_ascii_digit()) {
                     is_float = true;
                     self.advance(); // consume '.'
                 } else {

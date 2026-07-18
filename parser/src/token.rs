@@ -129,6 +129,10 @@ impl Span {
         self.end - self.start
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.start == self.end
+    }
+
     pub fn to_miette(&self) -> miette::SourceSpan {
         miette::SourceSpan::from(self.start)
     }

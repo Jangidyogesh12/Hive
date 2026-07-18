@@ -302,13 +302,13 @@ impl<'a> Parser<'a> {
             None
         };
 
-        if let (Some(min), Some(max)) = (min_hops, max_hops) {
-            if min > max {
-                return Err(ParseError::Generic {
-                    message: "Invalid relationship range: min cannot exceed max".to_string(),
-                    span: self.current.span.to_miette(),
-                });
-            }
+        if let (Some(min), Some(max)) = (min_hops, max_hops)
+            && min > max
+        {
+            return Err(ParseError::Generic {
+                message: "Invalid relationship range: min cannot exceed max".to_string(),
+                span: self.current.span.to_miette(),
+            });
         }
 
         Ok(RelationshipLength { min_hops, max_hops })
