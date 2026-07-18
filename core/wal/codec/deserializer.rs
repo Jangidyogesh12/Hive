@@ -1,8 +1,7 @@
 use crate::errors::DbError;
-use crate::value::{BOOLEAN, FLOAT, INTEGER, LONG_STRING, NULL, STRING, Value};
 use std::io::{Cursor, Read};
 
-use crate::wal::wal_entry::{WalEntry, WalProperty};
+use crate::wal::wal_entry::WalEntry;
 
 pub struct Deserializer<'a> {
     reader: Cursor<&'a [u8]>,
@@ -37,56 +36,6 @@ impl<'a> Deserializer<'a> {
             .read_exact(&mut buf)
             .map_err(|_| DbError::ReadError)?;
         Ok(u64::from_le_bytes(buf))
-    }
-
-    pub fn read_i64(&mut self) -> Result<i64, DbError> {
-        let mut buf = [0u8; 8];
-        self.reader
-            .read_exact(&mut buf)
-            .map_err(|_| DbError::ReadError)?;
-        Ok(i64::from_le_bytes(buf))
-    }
-
-    pub fn read_f64(&mut self) -> Result<f64, DbError> {
-        let mut buf = [0u8; 8];
-        self.reader
-            .read_exact(&mut buf)
-            .map_err(|_| DbError::ReadError)?;
-        Ok(f64::from_le_bytes(buf))
-    }
-
-    pub fn read_string(&mut self) -> Result<String, DbError> {
-        let len = self.read_u32()? as usize;
-        let mut buf = vec![0u8; len];
-        self.reader
-            .read_exact(&mut buf)
-            .map_err(|_| DbError::ReadError)?;
-        String::from_utf8(buf).map_err(|_| DbError::ReadError)
-    }
-
-    pub fn read_value(&mut self) -> Result<Value, DbError> {
-        match self.read_u8()? {
-            NULL => Ok(Value::Null),
-            INTEGER => Ok(Value::Integer(self.read_i64()?)),
-            FLOAT => Ok(Value::Float(self.read_f64()?)),
-            BOOLEAN => Ok(Value::Boolean(self.read_u8()? != 0)),
-            STRING | LONG_STRING => Ok(Value::String(self.read_string()?)),
-            _ => Err(DbError::ReadError),
-        }
-    }
-
-    pub fn read_properties(&mut self) -> Result<Vec<WalProperty>, DbError> {
-        let count = self.read_u32()? as usize;
-        let mut properties = Vec::with_capacity(count);
-
-        for _ in 0..count {
-            properties.push(WalProperty {
-                key: self.read_string()?,
-                value: self.read_value()?,
-            });
-        }
-
-        Ok(properties)
     }
 
     pub fn read_entries(&mut self) -> Result<Vec<WalEntry>, DbError> {
