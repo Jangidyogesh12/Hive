@@ -18,24 +18,17 @@
 
 pub use hive_core::*;
 
-pub use hive_core::db::hive_db::{Edge, HiveDb, HiveDbInfo, Node, Property};
+pub use hive_core::db::hive_db::HiveDb;
 pub use hive_core::errors::DbError;
-pub use hive_core::query::executor::Executor;
-pub use hive_parser::parser::parse;
-pub use hive_core::query::planner::plan;
-pub use hive_core::query::result::QueryResult;
 pub use hive_core::transaction::Transaction;
 pub use hive_core::types::{EdgeId, NodeId, PropertyId};
 pub use hive_core::value::Value;
 
 /// Common imports for applications embedding Hive.
 pub mod prelude {
-    pub use hive_core::db::hive_db::{Edge, HiveDb, HiveDbInfo, Node, Property};
+    pub use hive_core::db::hive_db::HiveDb;
     pub use hive_core::errors::DbError;
-    pub use hive_core::query::executor::Executor;
-    pub use hive_parser::parser::parse;
-    pub use hive_core::query::planner::plan;
-    pub use hive_core::query::result::QueryResult;
+    pub use hive_core::transaction::Transaction;
     pub use hive_core::types::{EdgeId, NodeId, PropertyId};
     pub use hive_core::value::Value;
 }
