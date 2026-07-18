@@ -1,6 +1,6 @@
 # Examples
 
-This directory contains end-to-end Hive API examples.
+This directory contains Hive API examples for opening a database and parsing/planning Cypher queries.
 
 Run from the workspace root:
 
