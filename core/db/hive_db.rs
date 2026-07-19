@@ -1,7 +1,7 @@
 use crate::errors::DbError;
 use crate::storage::pager::Pager;
 use crate::wal::Wal;
-use crate::wal::recovery::{RecoveryManager, RecoveryOutcome};
+use crate::wal::recovery::{self, RecoveryOutcome};
 use std::{fs, path::Path};
 
 pub struct HiveDb {
@@ -18,7 +18,7 @@ impl HiveDb {
         let mut pager = Pager::open(path, 128, 128)?;
         let wal = Wal::open(&wal_path)?;
 
-        let recovery_outcome = RecoveryManager::recover(path, &mut pager)?;
+        let recovery_outcome = recovery::recover(path, &mut pager)?;
 
         match recovery_outcome {
             RecoveryOutcome::Clean => {}

@@ -1,8 +1,10 @@
 mod codec;
+mod log;
+pub mod recovery;
 mod utils;
-mod wal;
-mod wal_entry;
+pub mod wal_entry;
 
 pub use codec::{Deserializer, Serializer};
-pub use wal::Wal;
-pub use wal_entry::{WalEntry, WalEntryType, WalProperty};
+pub use log::Wal;
+pub use recovery::RecoveryOutcome;
+pub use wal_entry::{TxId, WalEntry, WalEntryType, WalProperty};

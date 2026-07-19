@@ -1,36 +1,9 @@
-use super::codec::{Deserializer, Serializer};
 use crate::errors::DbError;
-use crate::types::{EdgeId, NodeId};
+use crate::storage::page::format::PAGE_SIZE;
+use crate::storage::pager::Lsn;
 use crate::value::Value;
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WalEntryType {
-    CreateNode = 1,
-    CreateEdge = 2,
-    UpdateNode = 3,
-    UpdateEdge = 4,
-    DeleteNode = 5,
-    DeleteEdge = 6,
-    Checkpoint = 7,
-    Transaction = 8,
-}
-
-impl WalEntryType {
-    pub(super) fn from_byte(byte: u8) -> Result<Self, DbError> {
-        match byte {
-            1 => Ok(Self::CreateNode),
-            2 => Ok(Self::CreateEdge),
-            3 => Ok(Self::UpdateNode),
-            4 => Ok(Self::UpdateEdge),
-            5 => Ok(Self::DeleteNode),
-            6 => Ok(Self::DeleteEdge),
-            7 => Ok(Self::Checkpoint),
-            8 => Ok(Self::Transaction),
-            _ => Err(DbError::ReadError),
-        }
-    }
-}
+pub type TxId = u64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WalProperty {
@@ -38,146 +11,151 @@ pub struct WalProperty {
     pub value: Value,
 }
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalEntryType {
+    Begin = 1,
+    PageImage = 2,
+    Commit = 3,
+    Checkpoint = 4,
+}
+
+impl WalEntryType {
+    pub fn from_byte(byte: u8) -> Result<Self, DbError> {
+        match byte {
+            1 => Ok(Self::Begin),
+            2 => Ok(Self::PageImage),
+            3 => Ok(Self::Commit),
+            4 => Ok(Self::Checkpoint),
+            _ => Err(DbError::ReadError),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WalEntry {
-    CreateNode {
-        node_id: NodeId,
-        label: String,
-        properties: Vec<WalProperty>,
+    Begin {
+        tx_id: TxId,
+        lsn: Lsn,
     },
-    CreateEdge {
-        edge_id: EdgeId,
-        src: NodeId,
-        dst: NodeId,
-        label: String,
-        properties: Vec<WalProperty>,
+    PageImage {
+        tx_id: TxId,
+        lsn: Lsn,
+        page_id: u32,
+        page_lsn: Lsn,
+        bytes: Box<[u8; PAGE_SIZE]>,
     },
-    UpdateNode {
-        node_id: NodeId,
-        key: String,
-        value: Value,
+    Commit {
+        tx_id: TxId,
+        lsn: Lsn,
     },
-    UpdateEdge {
-        edge_id: EdgeId,
-        key: String,
-        value: Value,
-    },
-    DeleteNode {
-        node_id: NodeId,
-    },
-    DeleteEdge {
-        edge_id: EdgeId,
-    },
-    Checkpoint,
-    Transaction {
-        entries: Vec<WalEntry>,
+    Checkpoint {
+        lsn: Lsn,
     },
 }
 
 impl WalEntry {
-    pub(super) fn entry_type(&self) -> WalEntryType {
+    pub fn entry_type(&self) -> WalEntryType {
         match self {
-            Self::CreateNode { .. } => WalEntryType::CreateNode,
-            Self::CreateEdge { .. } => WalEntryType::CreateEdge,
-            Self::UpdateNode { .. } => WalEntryType::UpdateNode,
-            Self::UpdateEdge { .. } => WalEntryType::UpdateEdge,
-            Self::DeleteNode { .. } => WalEntryType::DeleteNode,
-            Self::DeleteEdge { .. } => WalEntryType::DeleteEdge,
-            Self::Checkpoint => WalEntryType::Checkpoint,
-            Self::Transaction { .. } => WalEntryType::Transaction,
+            Self::Begin { .. } => WalEntryType::Begin,
+            Self::PageImage { .. } => WalEntryType::PageImage,
+            Self::Commit { .. } => WalEntryType::Commit,
+            Self::Checkpoint { .. } => WalEntryType::Checkpoint,
         }
     }
 
-    pub(super) fn encode_payload(&self) -> Result<Vec<u8>, DbError> {
-        let mut buf = Vec::new();
-        let mut ser = Serializer::new(&mut buf);
-
+    pub fn lsn(&self) -> Lsn {
         match self {
-            Self::CreateNode {
-                node_id,
-                label,
-                properties,
-            } => {
-                ser.write_u64(*node_id)?;
-                ser.write_string(label)?;
-                ser.write_properties(properties)?;
-            }
-            Self::CreateEdge {
-                edge_id,
-                src,
-                dst,
-                label,
-                properties,
-            } => {
-                ser.write_u64(*edge_id)?;
-                ser.write_u64(*src)?;
-                ser.write_u64(*dst)?;
-                ser.write_string(label)?;
-                ser.write_properties(properties)?;
-            }
-            Self::UpdateNode {
-                node_id,
-                key,
-                value,
-            } => {
-                ser.write_u64(*node_id)?;
-                ser.write_string(key)?;
-                ser.write_value(value)?;
-            }
-            Self::UpdateEdge {
-                edge_id,
-                key,
-                value,
-            } => {
-                ser.write_u64(*edge_id)?;
-                ser.write_string(key)?;
-                ser.write_value(value)?;
-            }
-            Self::DeleteNode { node_id } => ser.write_u64(*node_id)?,
-            Self::DeleteEdge { edge_id } => ser.write_u64(*edge_id)?,
-            Self::Checkpoint => {}
-            Self::Transaction { entries } => ser.write_entries(entries)?,
+            Self::Begin { lsn, .. }
+            | Self::PageImage { lsn, .. }
+            | Self::Commit { lsn, .. }
+            | Self::Checkpoint { lsn, .. } => *lsn,
         }
+    }
 
+    pub fn tx_id(&self) -> Option<TxId> {
+        match self {
+            Self::Begin { tx_id, .. }
+            | Self::PageImage { tx_id, .. }
+            | Self::Commit { tx_id, .. } => Some(*tx_id),
+            Self::Checkpoint { .. } => None,
+        }
+    }
+
+    pub fn encode_payload(&self) -> Result<Vec<u8>, DbError> {
+        let mut buf = Vec::new();
+        match self {
+            Self::Begin { tx_id, lsn } => {
+                buf.extend_from_slice(&tx_id.to_le_bytes());
+                buf.extend_from_slice(&lsn.to_le_bytes());
+            }
+            Self::PageImage {
+                tx_id,
+                lsn,
+                page_id,
+                page_lsn,
+                bytes,
+            } => {
+                buf.extend_from_slice(&tx_id.to_le_bytes());
+                buf.extend_from_slice(&lsn.to_le_bytes());
+                buf.extend_from_slice(&page_id.to_le_bytes());
+                buf.extend_from_slice(&page_lsn.to_le_bytes());
+                buf.extend_from_slice(bytes.as_ref());
+            }
+            Self::Commit { tx_id, lsn } => {
+                buf.extend_from_slice(&tx_id.to_le_bytes());
+                buf.extend_from_slice(&lsn.to_le_bytes());
+            }
+            Self::Checkpoint { lsn } => {
+                buf.extend_from_slice(&lsn.to_le_bytes());
+            }
+        }
         Ok(buf)
     }
 
-    pub(super) fn decode(entry_type: u8, payload: &[u8]) -> Result<Self, DbError> {
-        let mut de = Deserializer::new(payload);
-
+    pub fn decode(entry_type: u8, payload: &[u8]) -> Result<Self, DbError> {
         match WalEntryType::from_byte(entry_type)? {
-            WalEntryType::CreateNode => Ok(Self::CreateNode {
-                node_id: de.read_u64()?,
-                label: de.read_string()?,
-                properties: de.read_properties()?,
-            }),
-            WalEntryType::CreateEdge => Ok(Self::CreateEdge {
-                edge_id: de.read_u64()?,
-                src: de.read_u64()?,
-                dst: de.read_u64()?,
-                label: de.read_string()?,
-                properties: de.read_properties()?,
-            }),
-            WalEntryType::UpdateNode => Ok(Self::UpdateNode {
-                node_id: de.read_u64()?,
-                key: de.read_string()?,
-                value: de.read_value()?,
-            }),
-            WalEntryType::UpdateEdge => Ok(Self::UpdateEdge {
-                edge_id: de.read_u64()?,
-                key: de.read_string()?,
-                value: de.read_value()?,
-            }),
-            WalEntryType::DeleteNode => Ok(Self::DeleteNode {
-                node_id: de.read_u64()?,
-            }),
-            WalEntryType::DeleteEdge => Ok(Self::DeleteEdge {
-                edge_id: de.read_u64()?,
-            }),
-            WalEntryType::Checkpoint => Ok(Self::Checkpoint),
-            WalEntryType::Transaction => Ok(Self::Transaction {
-                entries: de.read_entries()?,
-            }),
+            WalEntryType::Begin => {
+                if payload.len() < 16 {
+                    return Err(DbError::ReadError);
+                }
+                let tx_id = u64::from_le_bytes(payload[0..8].try_into().unwrap());
+                let lsn = u64::from_le_bytes(payload[8..16].try_into().unwrap());
+                Ok(Self::Begin { tx_id, lsn })
+            }
+            WalEntryType::PageImage => {
+                if payload.len() < 24 + PAGE_SIZE {
+                    return Err(DbError::ReadError);
+                }
+                let tx_id = u64::from_le_bytes(payload[0..8].try_into().unwrap());
+                let lsn = u64::from_le_bytes(payload[8..16].try_into().unwrap());
+                let page_id = u32::from_le_bytes(payload[16..20].try_into().unwrap());
+                let page_lsn = u64::from_le_bytes(payload[20..28].try_into().unwrap());
+                let mut bytes = Box::new([0u8; PAGE_SIZE]);
+                bytes.copy_from_slice(&payload[28..28 + PAGE_SIZE]);
+                Ok(Self::PageImage {
+                    tx_id,
+                    lsn,
+                    page_id,
+                    page_lsn,
+                    bytes,
+                })
+            }
+            WalEntryType::Commit => {
+                if payload.len() < 16 {
+                    return Err(DbError::ReadError);
+                }
+                let tx_id = u64::from_le_bytes(payload[0..8].try_into().unwrap());
+                let lsn = u64::from_le_bytes(payload[8..16].try_into().unwrap());
+                Ok(Self::Commit { tx_id, lsn })
+            }
+            WalEntryType::Checkpoint => {
+                if payload.len() < 8 {
+                    return Err(DbError::ReadError);
+                }
+                let lsn = u64::from_le_bytes(payload[0..8].try_into().unwrap());
+                Ok(Self::Checkpoint { lsn })
+            }
         }
     }
 }
