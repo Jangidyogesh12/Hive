@@ -1,5 +1,5 @@
 use super::buffer_pool::BufferPool;
-use super::page::format::{MetaHeader, META_PAGE_ID, PAGE_SIZE};
+use super::page::format::{META_PAGE_ID, MetaHeader, PAGE_SIZE};
 use super::page::layout;
 use super::page_cache::{PageCache, PageId};
 use crate::errors::DbError;
