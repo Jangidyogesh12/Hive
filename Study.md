@@ -64,7 +64,9 @@ File: `core/db/hive_db.rs`
 - Open invokes WAL recovery.
 - `create_node()` — allocates a DataNode page, serializes NodeRecord, returns packed NodeId.
 - `get_node(node_id)` — unpacks ID, reads page, deserializes NodeRecord.
-- Meta page tracks `node_count` and `root_data_page`.
+- `create_edge(src, dst)` — allocates a DataEdge page, serializes EdgeRecord, returns packed EdgeId.
+- `get_edge(edge_id)` — unpacks ID, reads page, deserializes EdgeRecord.
+- Meta page tracks `node_count`, `edge_count`, `root_data_page`, `root_edge_page`.
 
 ### Query Layer
 
@@ -85,17 +87,7 @@ cargo fmt --check -p hive_core_testing
 
 ## What Is Left To Implement
 
-### 1. Edge CRUD And Adjacency
-
-Goal: `create_edge` and traversal basics.
-
-Tasks:
-- Store `EdgeRecord` in `DataEdge` pages.
-- Decide adjacency model (linked lists vs page-backed indexes).
-- Update source/destination node records.
-- Add tests for traversal.
-
-### 2. Properties, Labels, And Strings
+### 1. Properties, Labels, And Strings
 
 Goal: make graph records useful beyond raw IDs.
 
@@ -105,7 +97,7 @@ Tasks:
 - Label storage.
 - Tests for all value types.
 
-### 3. WAL Commit Integration
+### 2. WAL Commit Integration
 
 Goal: writes must be recoverable after crash.
 
@@ -116,7 +108,7 @@ Tasks:
 - Engine-generated transaction IDs.
 - Crash-style tests.
 
-### 4. Query Executor
+### 3. Query Executor
 
 Goal: end-to-end query execution.
 
@@ -126,7 +118,7 @@ Tasks:
 - `WHERE`, `RETURN`, `SET`, `DELETE`, `MERGE`.
 - Tests after graph CRUD is restored.
 
-### 5. B-Tree Indexes
+### 4. B-Tree Indexes
 
 Goal: durable page indexes for property/label/edge-type lookup.
 
@@ -135,7 +127,7 @@ Tasks:
 - Exact-match lookup.
 - Range scans later.
 
-### 6. Advanced Features (after correctness)
+### 5. Advanced Features (after correctness)
 
 - Coarse `Arc<RwLock<HiveDb>>` wrapper.
 - Page-level locks.
@@ -149,7 +141,7 @@ Tasks:
 
 ```text
 bindings/rust         public hive crate
-core/db               HiveDb open/close, create_node, get_node
+core/db               HiveDb open/close, create_node, get_node, create_edge, get_edge
 core/types            NodeId/EdgeId pack/unpack, NIL_ID, DELETED flag
 core/storage
   buffer_pool.rs      reusable 4KB buffers
@@ -161,7 +153,7 @@ core/storage
   page/serializer.rs  byte helpers, varints, checksum
 core/wal              physical WAL + redo recovery
 core/query            parser/planner, executor stubbed
-testing/rust          page storage, cache, WAL, bootstrap, record ID, node CRUD tests
+testing/rust          page storage, cache, WAL, bootstrap, record ID, node CRUD, edge CRUD tests
 ```
 
 ---
