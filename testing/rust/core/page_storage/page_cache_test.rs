@@ -1,5 +1,5 @@
 use crate::storage::buffer_pool::BufferPool;
-use crate::storage::page::format::PAGE_SIZE;
+use crate::storage::page::format::{META_PAGE_ID, PAGE_SIZE};
 use crate::storage::page_cache::PageCache;
 
 fn insert_page(cache: &mut PageCache, pool: &mut BufferPool, page_id: u32, marker: u8) {
@@ -72,12 +72,12 @@ fn meta_page_is_pinned_and_not_evicted() {
     let mut pool = BufferPool::new(2);
     let mut cache = PageCache::new(1);
 
-    insert_page(&mut cache, &mut pool, 1, 1);
-    assert_eq!(cache.get(1).unwrap().pin_count(), 1);
+    insert_page(&mut cache, &mut pool, META_PAGE_ID, 1);
+    assert_eq!(cache.get(META_PAGE_ID).unwrap().pin_count(), 1);
     let next = pool.acquire().unwrap();
 
     assert!(cache.insert(2, next, &mut pool).is_err());
-    assert!(cache.contains(1));
+    assert!(cache.contains(META_PAGE_ID));
     assert_eq!(pool.used(), 1);
 }
 

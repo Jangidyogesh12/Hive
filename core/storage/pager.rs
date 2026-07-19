@@ -1,5 +1,6 @@
 use super::buffer_pool::BufferPool;
-use super::page::format::PAGE_SIZE;
+use super::page::format::{MetaHeader, META_PAGE_ID, PAGE_SIZE};
+use super::page::layout;
 use super::page_cache::{PageCache, PageId};
 use crate::errors::DbError;
 use std::fs::{File, OpenOptions, create_dir_all};
@@ -92,6 +93,8 @@ pub struct Pager {
 
 impl Pager {
     /// Opens the pager for `hive.db` and creates its cache and reusable buffer pool.
+    ///
+    /// If the database file is empty, this initializes page 0 as the meta page.
     pub fn open(
         db_dir: &Path,
         cache_capacity: usize,
@@ -105,12 +108,41 @@ impl Pager {
         let page_cache = PageCache::new(cache_capacity);
         let pool = BufferPool::new(pool_capacity);
 
-        Ok(Self {
+        let mut pager = Self {
             file,
             page_cache,
             pool,
             next_lsn: AtomicU64::new(1),
-        })
+        };
+
+        let page_count = pager.page_count()?;
+        if page_count == 0 {
+            pager.bootstrap_new_db()?;
+        }
+
+        Ok(pager)
+    }
+
+    /// Initializes a brand-new database by writing a valid meta page to page 0.
+    fn bootstrap_new_db(&mut self) -> Result<(), DbError> {
+        let mut buf = [0u8; PAGE_SIZE];
+        let meta = MetaHeader::new();
+        layout::init_meta_page(&mut buf, &meta);
+
+        self.file.write_page(META_PAGE_ID, &buf)?;
+        self.file.flush()?;
+        self.file.sync()?;
+
+        let buf_owned = Box::new(buf);
+        if let Some(evicted) = self
+            .page_cache
+            .insert(META_PAGE_ID, buf_owned, &mut self.pool)?
+            && evicted.was_dirty
+        {
+            self.flush_page_to_disk(evicted.page_id)?;
+        }
+
+        Ok(())
     }
 
     /// Allocates a new log sequence number for ordering page changes.

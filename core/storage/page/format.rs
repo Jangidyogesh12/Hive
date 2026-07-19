@@ -7,6 +7,12 @@ pub const META_HEADER_SIZE: usize = 100;
 pub const SLOT_ENTRY_SIZE: usize = 4;
 pub const HIVE_MAGIC: [u8; 16] = [b'H', b'I', b'V', b'E', 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
 pub const CURRENT_VERSION: u32 = 2;
+pub const META_PAGE_ID: u32 = 0;
+
+/// Returns true if the page buffer starts with the Hive magic bytes.
+pub fn is_meta_page(buf: &[u8; PAGE_SIZE]) -> bool {
+    buf[..16] == HIVE_MAGIC
+}
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

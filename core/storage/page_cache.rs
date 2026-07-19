@@ -1,11 +1,9 @@
 use super::buffer_pool::{BufferPool, PageBuffer};
-use super::page::format::PAGE_SIZE;
+use super::page::format::{META_PAGE_ID, PAGE_SIZE};
 use crate::errors::DbError;
 use std::collections::{HashMap, VecDeque};
 
 pub type PageId = u32;
-
-const META_PAGE_ID: PageId = 1;
 
 /// One page currently resident in memory.
 ///
@@ -199,7 +197,7 @@ impl PageCache {
     /// Inserts a loaded page buffer into the cache.
     ///
     /// If the cache is full, this evicts one eligible page and returns its
-    /// metadata. Page 1 starts pinned because it contains database metadata.
+    /// metadata. Page 0 starts pinned because it contains database metadata.
     pub fn insert(
         &mut self,
         page_id: PageId,
