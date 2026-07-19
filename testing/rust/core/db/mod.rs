@@ -3,3 +3,6 @@ mod wal_test;
 
 #[cfg(test)]
 mod bootstrap_test;
+
+#[cfg(test)]
+mod node_test;

@@ -1,5 +1,5 @@
 // Tests for variable-width record serialization: Node, Edge, Property.
-use crate::storage::page::record::{EdgeRecordV2, NodeRecordV2, PropertyEntry, PropertyRecordV2};
+use crate::storage::page::record::{EdgeRecord, NodeRecord, PropertyEntry, PropertyRecord};
 use crate::types::NIL_ID;
 use crate::value::Value;
 
@@ -15,7 +15,7 @@ fn make_property(key_hash: u64, value: &Value) -> PropertyEntry {
 
 #[test]
 fn node_record_new_sets_defaults() {
-    let node = NodeRecordV2::new(42);
+    let node = NodeRecord::new(42);
     assert_eq!(node.id, 42);
     assert_eq!(node.label_id, 0);
     assert_eq!(node.flags, 0);
@@ -27,7 +27,7 @@ fn node_record_new_sets_defaults() {
 
 #[test]
 fn node_record_no_properties_roundtrip() {
-    let mut node = NodeRecordV2::new(100);
+    let mut node = NodeRecord::new(100);
     node.label_id = 5;
     node.first_out_edge = 20;
 
@@ -36,7 +36,7 @@ fn node_record_no_properties_roundtrip() {
     let written = node.to_bytes(&mut buf).unwrap();
     assert_eq!(written, size);
 
-    let decoded = NodeRecordV2::from_bytes(&buf).unwrap();
+    let decoded = NodeRecord::from_bytes(&buf).unwrap();
     assert_eq!(decoded.id, 100);
     assert_eq!(decoded.label_id, 5);
     assert_eq!(decoded.first_out_edge, 20);
@@ -47,7 +47,7 @@ fn node_record_no_properties_roundtrip() {
 
 #[test]
 fn node_record_with_integer_property_roundtrip() {
-    let mut node = NodeRecordV2::new(1);
+    let mut node = NodeRecord::new(1);
     node.properties
         .push(make_property(100, &Value::Integer(42)));
 
@@ -55,7 +55,7 @@ fn node_record_with_integer_property_roundtrip() {
     let mut buf = vec![0u8; size];
     node.to_bytes(&mut buf).unwrap();
 
-    let decoded = NodeRecordV2::from_bytes(&buf).unwrap();
+    let decoded = NodeRecord::from_bytes(&buf).unwrap();
     assert_eq!(decoded.properties.len(), 1);
     assert_eq!(decoded.properties[0].key_hash, 100);
     assert_eq!(decoded.properties[0].value_type, crate::value::INTEGER);
@@ -68,7 +68,7 @@ fn node_record_with_integer_property_roundtrip() {
 
 #[test]
 fn node_record_with_multiple_property_types_roundtrip() {
-    let mut node = NodeRecordV2::new(50);
+    let mut node = NodeRecord::new(50);
     node.properties.push(make_property(1, &Value::Null));
     node.properties.push(make_property(2, &Value::Integer(999)));
     node.properties.push(make_property(3, &Value::Float(3.14)));
@@ -81,7 +81,7 @@ fn node_record_with_multiple_property_types_roundtrip() {
     let mut buf = vec![0u8; size];
     node.to_bytes(&mut buf).unwrap();
 
-    let decoded = NodeRecordV2::from_bytes(&buf).unwrap();
+    let decoded = NodeRecord::from_bytes(&buf).unwrap();
     assert_eq!(decoded.properties.len(), 5);
 
     let types = [
@@ -108,7 +108,7 @@ fn node_record_with_multiple_property_types_roundtrip() {
 
 #[test]
 fn node_record_with_many_properties_roundtrip() {
-    let mut node = NodeRecordV2::new(1);
+    let mut node = NodeRecord::new(1);
     for i in 0..100 {
         node.properties
             .push(make_property(i as u64, &Value::Integer(i as i64)));
@@ -118,7 +118,7 @@ fn node_record_with_many_properties_roundtrip() {
     let mut buf = vec![0u8; size];
     node.to_bytes(&mut buf).unwrap();
 
-    let decoded = NodeRecordV2::from_bytes(&buf).unwrap();
+    let decoded = NodeRecord::from_bytes(&buf).unwrap();
     assert_eq!(decoded.properties.len(), 100);
     for i in 0..100 {
         assert_eq!(decoded.properties[i].key_hash, i as u64);
@@ -132,7 +132,7 @@ fn node_record_with_many_properties_roundtrip() {
 
 #[test]
 fn edge_record_new_sets_defaults() {
-    let edge = EdgeRecordV2::new(7);
+    let edge = EdgeRecord::new(7);
     assert_eq!(edge.id, 7);
     assert_eq!(edge.label_id, 0);
     assert_eq!(edge.src, NIL_ID);
@@ -145,7 +145,7 @@ fn edge_record_new_sets_defaults() {
 
 #[test]
 fn edge_record_with_properties_roundtrip() {
-    let mut edge = EdgeRecordV2::new(99);
+    let mut edge = EdgeRecord::new(99);
     edge.src = 10;
     edge.dst = 20;
     edge.label_id = 3;
@@ -159,7 +159,7 @@ fn edge_record_with_properties_roundtrip() {
     let mut buf = vec![0u8; size];
     edge.to_bytes(&mut buf).unwrap();
 
-    let decoded = EdgeRecordV2::from_bytes(&buf).unwrap();
+    let decoded = EdgeRecord::from_bytes(&buf).unwrap();
     assert_eq!(decoded.id, 99);
     assert_eq!(decoded.src, 10);
     assert_eq!(decoded.dst, 20);
@@ -177,10 +177,10 @@ fn edge_record_with_properties_roundtrip() {
 
 #[test]
 fn edge_record_different_from_node_record() {
-    let mut node = NodeRecordV2::new(1);
+    let mut node = NodeRecord::new(1);
     node.properties.push(make_property(1, &Value::Integer(10)));
 
-    let mut edge = EdgeRecordV2::new(1);
+    let mut edge = EdgeRecord::new(1);
     edge.src = 5;
     edge.dst = 6;
     edge.properties.push(make_property(1, &Value::Integer(10)));
@@ -192,7 +192,7 @@ fn edge_record_different_from_node_record() {
 
 #[test]
 fn property_record_roundtrip_all_fields() {
-    let mut prop = PropertyRecordV2::new(42);
+    let mut prop = PropertyRecord::new(42);
     prop.key_hash = 0xABCD;
     prop.key_offset = 500;
     prop.value_type = crate::value::INTEGER;
@@ -200,11 +200,11 @@ fn property_record_roundtrip_all_fields() {
     prop.next_property = 200;
     prop.flags = 1;
 
-    let mut buf = [0u8; PropertyRecordV2::SIZE];
+    let mut buf = [0u8; PropertyRecord::SIZE];
     let written = prop.to_bytes(&mut buf).unwrap();
-    assert_eq!(written, PropertyRecordV2::SIZE);
+    assert_eq!(written, PropertyRecord::SIZE);
 
-    let decoded = PropertyRecordV2::from_bytes(&buf).unwrap();
+    let decoded = PropertyRecord::from_bytes(&buf).unwrap();
     assert_eq!(decoded.id, 42);
     assert_eq!(decoded.key_hash, 0xABCD);
     assert_eq!(decoded.key_offset, 500);
@@ -215,15 +215,15 @@ fn property_record_roundtrip_all_fields() {
 
 #[test]
 fn property_record_string_value_roundtrip() {
-    let mut prop = PropertyRecordV2::new(1);
+    let mut prop = PropertyRecord::new(1);
     let (vt, inline) = Value::String("short".into()).to_inline_bytes();
     prop.value_type = vt;
     prop.value_inline = inline;
 
-    let mut buf = [0u8; PropertyRecordV2::SIZE];
+    let mut buf = [0u8; PropertyRecord::SIZE];
     prop.to_bytes(&mut buf).unwrap();
 
-    let decoded = PropertyRecordV2::from_bytes(&buf).unwrap();
+    let decoded = PropertyRecord::from_bytes(&buf).unwrap();
     assert_eq!(decoded.value_type, crate::value::STRING);
     let val = Value::from_bytes(decoded.value_type, decoded.value_inline);
     assert_eq!(val, Value::String("short".into()));
@@ -231,6 +231,6 @@ fn property_record_string_value_roundtrip() {
 
 #[test]
 fn property_record_encoded_size_is_constant() {
-    let prop = PropertyRecordV2::new(1);
-    assert_eq!(prop.encoded_size(), PropertyRecordV2::SIZE);
+    let prop = PropertyRecord::new(1);
+    assert_eq!(prop.encoded_size(), PropertyRecord::SIZE);
 }

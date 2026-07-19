@@ -1,5 +1,9 @@
 use crate::errors::DbError;
+use crate::storage::page::format::{META_PAGE_ID, PageType};
+use crate::storage::page::layout;
+use crate::storage::page::record::NodeRecord;
 use crate::storage::pager::Pager;
+use crate::types::{NodeId, pack_record_id, unpack_record_id};
 use crate::wal::Wal;
 use crate::wal::recovery::{self, RecoveryOutcome};
 use std::{fs, path::Path};
@@ -34,6 +38,84 @@ impl HiveDb {
         }
 
         Ok(Self { pager, wal })
+    }
+
+    /// Creates a new node and returns its packed NodeId.
+    pub fn create_node(&mut self) -> Result<NodeId, DbError> {
+        let node_id_counter = {
+            let meta_page = self.pager.get_page(META_PAGE_ID)?;
+            let meta = layout::read_meta_header(meta_page);
+            meta.node_count + 1
+        };
+
+        let page_id = self.find_or_alloc_data_node_page()?;
+
+        let mut page_buf = self.pager.get_page_mut(page_id)?;
+        let record = NodeRecord::new(node_id_counter);
+        let mut record_buf = vec![0u8; record.encoded_size()];
+        record.to_bytes(&mut record_buf)?;
+        let slot = layout::insert_record(&mut page_buf, &record_buf)?;
+
+        self.update_meta_node_count(node_id_counter)?;
+
+        Ok(pack_record_id(page_id, slot.0))
+    }
+
+    /// Reads a node by its packed NodeId.
+    pub fn get_node(&mut self, node_id: NodeId) -> Result<NodeRecord, DbError> {
+        let (page_id, slot_id) = unpack_record_id(node_id);
+
+        if slot_id == u16::MAX {
+            return Err(DbError::ReadError);
+        }
+
+        let page_buf = self.pager.get_page(page_id)?;
+        let record_bytes =
+            layout::read_record_bytes(page_buf, slot_id).ok_or(DbError::ReadError)?;
+
+        NodeRecord::from_bytes(record_bytes)
+    }
+
+    /// Finds an existing DataNode page with free space, or allocates a new one.
+    fn find_or_alloc_data_node_page(&mut self) -> Result<u32, DbError> {
+        let root_page = {
+            let meta_page = self.pager.get_page(META_PAGE_ID)?;
+            let meta = layout::read_meta_header(meta_page);
+            meta.root_data_page
+        };
+
+        if root_page != 0 {
+            let page_buf = self.pager.get_page(root_page)?;
+            if layout::get_free_space(page_buf) > 0 {
+                return Ok(root_page);
+            }
+        }
+
+        let new_page = self.pager.allocate_page()?;
+        let mut page_buf = self.pager.get_page_mut(new_page)?;
+        layout::init_regular_page(&mut page_buf, PageType::DataNode);
+
+        self.update_meta_root_data_page(new_page)?;
+
+        Ok(new_page)
+    }
+
+    /// Updates the node count in the meta header.
+    fn update_meta_node_count(&mut self, count: u64) -> Result<(), DbError> {
+        let mut meta_page = self.pager.get_page_mut(META_PAGE_ID)?;
+        let mut meta = layout::read_meta_header(&meta_page);
+        meta.node_count = count;
+        layout::write_meta_header(&mut meta_page, &meta);
+        Ok(())
+    }
+
+    /// Updates the root_data_page pointer in the meta header.
+    fn update_meta_root_data_page(&mut self, page_id: u32) -> Result<(), DbError> {
+        let mut meta_page = self.pager.get_page_mut(META_PAGE_ID)?;
+        let mut meta = layout::read_meta_header(&meta_page);
+        meta.root_data_page = page_id;
+        layout::write_meta_header(&mut meta_page, &meta);
+        Ok(())
     }
 
     pub fn close(mut self) {

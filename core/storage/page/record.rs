@@ -4,7 +4,7 @@ use crate::errors::DbError;
 use crate::types::NIL_ID;
 use crate::value;
 
-pub struct NodeRecordV2 {
+pub struct NodeRecord {
     pub id: u64,
     pub label_id: u32,
     pub flags: u32,
@@ -14,7 +14,7 @@ pub struct NodeRecordV2 {
     pub properties: Vec<PropertyEntry>,
 }
 
-pub struct EdgeRecordV2 {
+pub struct EdgeRecord {
     pub id: u64,
     pub label_id: u32,
     pub flags: u32,
@@ -26,7 +26,7 @@ pub struct EdgeRecordV2 {
     pub properties: Vec<PropertyEntry>,
 }
 
-pub struct PropertyRecordV2 {
+pub struct PropertyRecord {
     pub id: u64,
     pub key_hash: u64,
     pub key_offset: u64,
@@ -48,7 +48,7 @@ const NODE_FIXED_PREFIX: usize = 39;
 const EDGE_FIXED_PREFIX: usize = 63;
 const PROPERTY_ENTRY_BASE_SIZE: usize = 25;
 
-impl NodeRecordV2 {
+impl NodeRecord {
     /// Creates an empty node record with no label, edges, or properties yet.
     pub fn new(id: u64) -> Self {
         Self {
@@ -183,7 +183,7 @@ impl NodeRecordV2 {
     }
 }
 
-impl EdgeRecordV2 {
+impl EdgeRecord {
     /// Creates an empty edge record whose endpoints and chain links are unset.
     pub fn new(id: u64) -> Self {
         Self {
@@ -330,7 +330,7 @@ impl EdgeRecordV2 {
     }
 }
 
-impl PropertyRecordV2 {
+impl PropertyRecord {
     pub const SIZE: usize = 56;
 
     /// Creates an empty property record with unset key/value links.
