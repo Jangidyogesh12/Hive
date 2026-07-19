@@ -16,6 +16,16 @@ Files: `core/storage/page/format.rs`, `layout.rs`, `record.rs`, `serializer.rs`
 - Slotted page init, insert, read, delete, compact, checksum.
 - `NodeRecordV2`, `EdgeRecordV2`, `PropertyRecordV2`.
 
+### Record IDs
+
+File: `core/types.rs`
+
+- `NodeId`, `EdgeId`, `PropertyId` are `u64` type aliases.
+- `pack_record_id(page_id, slot_id)` encodes into a single u64.
+- `unpack_record_id(id)` decodes back to `page_id + slot_id`.
+- Layout: `[page_id: 32 bits][slot_id: 16 bits][flags: 16 bits reserved]`.
+- `NIL_ID = u64::MAX`, `is_nil_id()`, `DELETED` flag.
+
 ### Buffer Pool
 
 File: `core/storage/buffer_pool.rs`
@@ -72,16 +82,7 @@ cargo fmt --check -p hive_core_testing
 
 ## What Is Left To Implement
 
-### 1. Durable Record IDs
-
-Goal: `NodeId`/`EdgeId` must locate records inside pages.
-
-Tasks:
-- Pack/unpack IDs as `page_id (32 bits) + slot_id (16 bits) + flags`.
-- Decide whether IDs include generation counters.
-- Add tests for encoding/decoding.
-
-### 2. Node CRUD On Pages
+### 1. Node CRUD On Pages
 
 Goal: `create_node` and `get_node` using `NodeRecordV2` and slotted pages.
 
@@ -92,7 +93,7 @@ Tasks:
 - Update meta node count.
 - Add tests for create/read/reopen.
 
-### 3. Edge CRUD And Adjacency
+### 2. Edge CRUD And Adjacency
 
 Goal: `create_edge` and traversal basics.
 
@@ -102,7 +103,7 @@ Tasks:
 - Update source/destination node records.
 - Add tests for traversal.
 
-### 4. Properties, Labels, And Strings
+### 3. Properties, Labels, And Strings
 
 Goal: make graph records useful beyond raw IDs.
 
@@ -112,7 +113,7 @@ Tasks:
 - Label storage.
 - Tests for all value types.
 
-### 5. WAL Commit Integration
+### 4. WAL Commit Integration
 
 Goal: writes must be recoverable after crash.
 
@@ -123,7 +124,7 @@ Tasks:
 - Engine-generated transaction IDs.
 - Crash-style tests.
 
-### 6. Query Executor
+### 5. Query Executor
 
 Goal: end-to-end query execution.
 
@@ -133,7 +134,7 @@ Tasks:
 - `WHERE`, `RETURN`, `SET`, `DELETE`, `MERGE`.
 - Tests after graph CRUD is restored.
 
-### 7. B-Tree Indexes
+### 6. B-Tree Indexes
 
 Goal: durable page indexes for property/label/edge-type lookup.
 
@@ -142,7 +143,7 @@ Tasks:
 - Exact-match lookup.
 - Range scans later.
 
-### 8. Advanced Features (after correctness)
+### 7. Advanced Features (after correctness)
 
 - Coarse `Arc<RwLock<HiveDb>>` wrapper.
 - Page-level locks.
@@ -157,6 +158,7 @@ Tasks:
 ```text
 bindings/rust         public hive crate
 core/db               HiveDb open/close
+core/types            NodeId/EdgeId pack/unpack, NIL_ID, DELETED flag
 core/storage
   buffer_pool.rs      reusable 4KB buffers
   page_cache.rs       page cache + eviction
@@ -167,7 +169,7 @@ core/storage
   page/serializer.rs  byte helpers, varints, checksum
 core/wal              physical WAL + redo recovery
 core/query            parser/planner, executor stubbed
-testing/rust          page storage, cache, WAL, bootstrap tests
+testing/rust          page storage, cache, WAL, bootstrap, record ID tests
 ```
 
 ---

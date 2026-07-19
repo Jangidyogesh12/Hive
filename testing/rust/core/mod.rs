@@ -2,4 +2,5 @@
 mod db;
 mod page_storage;
 mod query;
+mod types_test;
 mod utils;
