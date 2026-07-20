@@ -5,16 +5,19 @@ use crate::storage::page::format::{META_PAGE_ID, PageType};
 use crate::storage::page::layout;
 use crate::storage::page::record::{EdgeRecord, NodeRecord, PropertyEntry};
 use crate::storage::pager::Pager;
+use crate::transaction::Transaction;
 use crate::types::{EdgeId, NodeId, pack_record_id, unpack_record_id};
 use crate::value::{self, Value};
 use crate::wal::Wal;
 use crate::wal::recovery::{self, RecoveryOutcome};
+use crate::wal::wal_entry::{TxId, WalEntry};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{fs, path::Path};
 
 pub struct HiveDb {
     pub(crate) pager: Pager,
-    #[allow(dead_code)]
     pub(crate) wal: Wal,
+    next_tx_id: AtomicU64,
 }
 
 impl HiveDb {
@@ -40,7 +43,11 @@ impl HiveDb {
             }
         }
 
-        Ok(Self { pager, wal })
+        Ok(Self {
+            pager,
+            wal,
+            next_tx_id: AtomicU64::new(1),
+        })
     }
 
     /// Registers a label name and returns its numeric ID.
@@ -60,6 +67,8 @@ impl HiveDb {
 
     /// Creates a new node with a label and returns its packed NodeId.
     pub fn create_node_with_label(&mut self, label_id: u32) -> Result<NodeId, DbError> {
+        let tx_id = self.next_tx_id();
+
         let node_id_counter = {
             let meta_page = self.pager.get_page(META_PAGE_ID)?;
             let meta = layout::read_meta_header(meta_page);
@@ -76,6 +85,8 @@ impl HiveDb {
         let slot = layout::insert_record(page_buf, &record_buf)?;
 
         self.update_meta_node_count(node_id_counter)?;
+
+        self.commit_tx(tx_id)?;
 
         Ok(pack_record_id(page_id, slot.0))
     }
@@ -107,6 +118,8 @@ impl HiveDb {
         dst_id: NodeId,
         label_id: u32,
     ) -> Result<EdgeId, DbError> {
+        let tx_id = self.next_tx_id();
+
         let edge_id_counter = {
             let meta_page = self.pager.get_page(META_PAGE_ID)?;
             let meta = layout::read_meta_header(meta_page);
@@ -126,6 +139,8 @@ impl HiveDb {
         let slot = layout::insert_record(page_buf, &record_buf)?;
 
         self.update_meta_edge_count(edge_id_counter)?;
+
+        self.commit_tx(tx_id)?;
 
         Ok(pack_record_id(page_id, slot.0))
     }
@@ -153,6 +168,8 @@ impl HiveDb {
         key: &str,
         value: &Value,
     ) -> Result<(), DbError> {
+        let tx_id = self.next_tx_id();
+
         let (page_id, slot_id) = unpack_record_id(node_id);
         if slot_id == u16::MAX {
             return Err(DbError::ReadError);
@@ -192,6 +209,8 @@ impl HiveDb {
         let page_buf = self.pager.get_page_mut(page_id)?;
         layout::update_record(page_buf, slot_id, &record_buf)?;
 
+        self.commit_tx(tx_id)?;
+
         Ok(())
     }
 
@@ -224,6 +243,8 @@ impl HiveDb {
         key: &str,
         value: &Value,
     ) -> Result<(), DbError> {
+        let tx_id = self.next_tx_id();
+
         let (page_id, slot_id) = unpack_record_id(edge_id);
         if slot_id == u16::MAX {
             return Err(DbError::ReadError);
@@ -262,6 +283,8 @@ impl HiveDb {
 
         let page_buf = self.pager.get_page_mut(page_id)?;
         layout::update_record(page_buf, slot_id, &record_buf)?;
+
+        self.commit_tx(tx_id)?;
 
         Ok(())
     }
@@ -368,6 +391,66 @@ impl HiveDb {
         let mut meta = layout::read_meta_header(meta_page);
         meta.root_edge_page = page_id;
         layout::write_meta_header(meta_page, &meta);
+        Ok(())
+    }
+
+    /// Returns a new unique transaction ID.
+    pub(crate) fn next_tx_id(&self) -> TxId {
+        self.next_tx_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Begins a new explicit transaction.
+    pub fn begin(&mut self) -> Result<Transaction<'_>, DbError> {
+        let tx_id = self.next_tx_id();
+        Transaction::new(self, tx_id)
+    }
+
+    /// Commits a transaction by writing dirty page images to the WAL,
+    /// syncing, and stamping page LSNs.
+    pub(crate) fn commit_tx(&mut self, tx_id: TxId) -> Result<(), DbError> {
+        let dirty_pages = self.pager.dirty_page_ids();
+
+        let begin_lsn = self.pager.next_lsn();
+        let mut entries = Vec::with_capacity(dirty_pages.len() + 2);
+        entries.push(WalEntry::Begin {
+            tx_id,
+            lsn: begin_lsn,
+        });
+
+        for page_id in &dirty_pages {
+            let page_lsn = self.pager.next_lsn();
+            self.pager.stamp_page_lsn(*page_id, page_lsn)?;
+            let page = *self.pager.get_page(*page_id)?;
+            entries.push(WalEntry::PageImage {
+                tx_id,
+                lsn: page_lsn,
+                page_id: *page_id,
+                page_lsn,
+                bytes: Box::new(page),
+            });
+        }
+
+        let commit_lsn = self.pager.next_lsn();
+        entries.push(WalEntry::Commit {
+            tx_id,
+            lsn: commit_lsn,
+        });
+
+        self.wal.append_batch(&entries)?;
+        self.wal.sync()?;
+
+        for page_id in &dirty_pages {
+            self.pager.mark_spilled(*page_id)?;
+        }
+
+        Ok(())
+    }
+
+    /// Writes a checkpoint: flushes all dirty pages to disk and truncates the WAL.
+    pub fn checkpoint(&mut self) -> Result<(), DbError> {
+        self.pager.flush_file()?;
+        self.pager.sync_file()?;
+        self.wal.checkpoint()?;
         Ok(())
     }
 

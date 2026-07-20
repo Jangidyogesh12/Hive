@@ -1,4 +1,4 @@
-use hive::prelude::{HiveDb, Transaction};
+use hive::prelude::HiveDb;
 use hive::query::{parser::parse, planner::plan};
 use std::fs;
 use std::path::PathBuf;
@@ -8,7 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = fs::remove_dir_all(&db_path);
 
     let mut db = HiveDb::open(&db_path)?;
-    Transaction::new(&mut db)?.commit()?;
+    db.begin()?.commit()?;
 
     plan_query("CREATE (alice:Person {name: \"Alice\", age: 30})")?;
     plan_query("CREATE (bob:Person {name: \"Bob\", age: 32})")?;

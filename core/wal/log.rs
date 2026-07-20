@@ -122,6 +122,45 @@ impl Wal {
         Ok(())
     }
 
+    /// Appends a batch of WAL entries and flushes once at the end.
+    ///
+    /// This is more efficient than calling `append` in a loop because it
+    /// only flushes the BufWriter once after all entries are written.
+    pub fn append_batch(&mut self, entries: &[WalEntry]) -> Result<(), DbError> {
+        for entry in entries {
+            let entry_type = entry.entry_type() as u8;
+            let payload = entry.encode_payload()?;
+            let checksum = crc32_for_entry(entry_type, &payload);
+            let length = (1 + payload.len() + 4) as u32;
+
+            self.writer
+                .seek(SeekFrom::End(0))
+                .map_err(|_| DbError::SeekError)?;
+            self.writer
+                .write_all(&length.to_le_bytes())
+                .map_err(|_| DbError::WriteError)?;
+            self.writer
+                .write_all(&[entry_type])
+                .map_err(|_| DbError::WriteError)?;
+            self.writer
+                .write_all(&payload)
+                .map_err(|_| DbError::WriteError)?;
+            self.writer
+                .write_all(&checksum.to_le_bytes())
+                .map_err(|_| DbError::WriteError)?;
+        }
+        self.writer.flush().map_err(|_| DbError::WriteError)?;
+        Ok(())
+    }
+
+    /// Flushes all dirty pages to disk and truncates the WAL.
+    ///
+    /// This should be called periodically (checkpoint) so the WAL does not
+    /// grow indefinitely and recovery does not need to replay old entries.
+    pub fn checkpoint(&mut self) -> Result<(), DbError> {
+        self.truncate()
+    }
+
     pub fn flush(&mut self) -> Result<(), DbError> {
         self.writer.flush().map_err(|_| DbError::WriteError)
     }

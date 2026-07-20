@@ -223,6 +223,23 @@ impl Pager {
         self.page_cache.mark_dirty(page_id)
     }
 
+    /// Stamps a page's header LSN to the given value.
+    ///
+    /// This is called after writing a PageImage to the WAL so that recovery
+    /// can compare the on-disk page LSN against the WAL entry's page_lsn.
+    pub fn stamp_page_lsn(&mut self, page_id: PageId, lsn: Lsn) -> Result<(), DbError> {
+        let page = self.get_page_mut(page_id)?;
+        let mut header = super::page::format::PageHeader::from_bytes(page);
+        header.lsn = lsn as u32;
+        header.to_bytes(page);
+        Ok(())
+    }
+
+    /// Marks a cached page as spilled (safe to evict because its image is in WAL).
+    pub fn mark_spilled(&mut self, page_id: PageId) -> Result<(), DbError> {
+        self.page_cache.mark_spilled(page_id)
+    }
+
     /// Increments a page's pin count so cache eviction cannot remove it while in use.
     pub fn pin(&mut self, page_id: PageId) -> Result<(), DbError> {
         self.page_cache.pin(page_id)

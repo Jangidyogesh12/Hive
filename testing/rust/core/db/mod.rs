@@ -2,6 +2,9 @@
 mod wal_test;
 
 #[cfg(test)]
+mod wal_commit_test;
+
+#[cfg(test)]
 mod bootstrap_test;
 
 #[cfg(test)]
