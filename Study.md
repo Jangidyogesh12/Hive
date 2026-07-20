@@ -66,6 +66,8 @@ File: `core/db/hive_db.rs`
 - `get_node(node_id)` — unpacks ID, reads page, deserializes NodeRecord.
 - `create_edge(src, dst)` — allocates a DataEdge page, serializes EdgeRecord, returns packed EdgeId.
 - `get_edge(edge_id)` — unpacks ID, reads page, deserializes EdgeRecord.
+- `set_node_property(node_id, key, value)` — adds/updates a property on a node.
+- `get_node_property(node_id, key)` — reads a property value by key.
 - Meta page tracks `node_count`, `edge_count`, `root_data_page`, `root_edge_page`.
 
 ### Query Layer
@@ -87,17 +89,7 @@ cargo fmt --check -p hive_core_testing
 
 ## What Is Left To Implement
 
-### 1. Properties, Labels, And Strings
-
-Goal: make graph records useful beyond raw IDs.
-
-Tasks:
-- Property key storage strategy.
-- Inline short values, long strings in overflow pages.
-- Label storage.
-- Tests for all value types.
-
-### 2. WAL Commit Integration
+### 1. WAL Commit Integration
 
 Goal: writes must be recoverable after crash.
 
@@ -108,7 +100,7 @@ Tasks:
 - Engine-generated transaction IDs.
 - Crash-style tests.
 
-### 3. Query Executor
+### 2. Query Executor
 
 Goal: end-to-end query execution.
 
@@ -118,7 +110,7 @@ Tasks:
 - `WHERE`, `RETURN`, `SET`, `DELETE`, `MERGE`.
 - Tests after graph CRUD is restored.
 
-### 4. B-Tree Indexes
+### 3. B-Tree Indexes
 
 Goal: durable page indexes for property/label/edge-type lookup.
 
@@ -127,7 +119,7 @@ Tasks:
 - Exact-match lookup.
 - Range scans later.
 
-### 5. Advanced Features (after correctness)
+### 4. Advanced Features (after correctness)
 
 - Coarse `Arc<RwLock<HiveDb>>` wrapper.
 - Page-level locks.
@@ -141,19 +133,20 @@ Tasks:
 
 ```text
 bindings/rust         public hive crate
-core/db               HiveDb open/close, create_node, get_node, create_edge, get_edge
+core/db               HiveDb open/close, CRUD, properties
 core/types            NodeId/EdgeId pack/unpack, NIL_ID, DELETED flag
+core/value            Value enum, inline encoding, hash_key
 core/storage
   buffer_pool.rs      reusable 4KB buffers
   page_cache.rs       page cache + eviction
   pager.rs            page I/O + cache/pool
   page/format.rs      page headers, meta, types
-  page/layout.rs      slotted page operations
+  page/layout.rs      slotted page operations (insert, update, delete, compact)
   page/record.rs      NodeRecord, EdgeRecord, PropertyRecord
   page/serializer.rs  byte helpers, varints, checksum
 core/wal              physical WAL + redo recovery
 core/query            parser/planner, executor stubbed
-testing/rust          page storage, cache, WAL, bootstrap, record ID, node CRUD, edge CRUD tests
+testing/rust          page storage, cache, WAL, bootstrap, CRUD, property tests
 ```
 
 ---

@@ -111,6 +111,53 @@ pub fn insert_record(buf: &mut [u8; PAGE_SIZE], record_bytes: &[u8]) -> Result<S
     Ok(SlotIndex(header.slot_count - 1))
 }
 
+/// Inserts record bytes into a specific dead slot, reusing its index.
+///
+/// Returns the same slot index that was passed in. The slot must be dead.
+pub fn insert_record_at(
+    buf: &mut [u8; PAGE_SIZE],
+    slot_idx: u16,
+    record_bytes: &[u8],
+) -> Result<SlotIndex, DbError> {
+    let mut header = read_page_header(buf);
+    let content_start = content_start_for_page(buf);
+    let record_len = record_bytes.len();
+
+    if slot_idx >= header.slot_count {
+        return Err(DbError::WriteError);
+    }
+
+    let slot_pos = slot_offset(slot_idx, content_start);
+    let old_slot = SlotEntry::from_bytes(&buf[slot_pos..slot_pos + SLOT_ENTRY_SIZE]);
+    if !old_slot.is_dead() {
+        return Err(DbError::WriteError);
+    }
+
+    let required_space = record_len;
+    let free = get_free_space(buf);
+
+    if free < required_space {
+        compact_page(buf)?;
+        let free_after = get_free_space(buf);
+        if free_after < required_space {
+            return Err(DbError::WriteError);
+        }
+        header = read_page_header(buf);
+    }
+
+    let new_content_offset = header.free_space_offset as usize - record_len;
+    buf[new_content_offset..new_content_offset + record_len].copy_from_slice(record_bytes);
+
+    let new_slot = SlotEntry::new(new_content_offset as u16, record_len as u16);
+    new_slot.to_bytes(&mut buf[slot_pos..slot_pos + SLOT_ENTRY_SIZE]);
+
+    header.free_space_offset = new_content_offset as u16;
+    write_page_header(buf, &header);
+    update_checksum(buf);
+
+    Ok(SlotIndex(slot_idx))
+}
+
 /// Returns a borrowed slice for the live record stored at a slot index.
 pub fn read_record_bytes(buf: &[u8; PAGE_SIZE], slot_idx: u16) -> Option<&[u8]> {
     let header = read_page_header(buf);
@@ -153,6 +200,48 @@ pub fn delete_record(buf: &mut [u8; PAGE_SIZE], slot_idx: u16) -> Result<(), DbE
     dead.to_bytes(&mut buf[slot_pos..slot_pos + SLOT_ENTRY_SIZE]);
     update_checksum(buf);
     Ok(())
+}
+
+// Replaces a record in a slot with new bytes.
+
+// If the new record fits within the old record's space, it is updated in place.
+// Otherwise, the old record is deleted and the new one is inserted at the same
+// slot index. The returned SlotIndex is always the same as the input slot_idx.
+pub fn update_record(
+    buf: &mut [u8; PAGE_SIZE],
+    slot_idx: u16,
+    new_record_bytes: &[u8],
+) -> Result<SlotIndex, DbError> {
+    let header = read_page_header(buf);
+    if slot_idx >= header.slot_count {
+        return Err(DbError::ReadError);
+    }
+
+    let content_start = content_start_for_page(buf);
+    let slot_pos = slot_offset(slot_idx, content_start);
+    let old_slot = SlotEntry::from_bytes(&buf[slot_pos..slot_pos + SLOT_ENTRY_SIZE]);
+
+    if old_slot.is_dead() {
+        return Err(DbError::ReadError);
+    }
+
+    let old_len = old_slot.length as usize;
+    let new_len = new_record_bytes.len();
+
+    if new_len <= old_len {
+        let start = old_slot.offset as usize;
+        buf[start..start + new_len].copy_from_slice(new_record_bytes);
+        if new_len < old_len {
+            buf[start + new_len..start + old_len].fill(0);
+        }
+        let updated_slot = SlotEntry::new(old_slot.offset, new_len as u16);
+        updated_slot.to_bytes(&mut buf[slot_pos..slot_pos + SLOT_ENTRY_SIZE]);
+        update_checksum(buf);
+        return Ok(SlotIndex(slot_idx));
+    }
+
+    delete_record(buf, slot_idx)?;
+    insert_record_at(buf, slot_idx, new_record_bytes)
 }
 
 /// Adds deleted record space to the page-local freeblock chain.
