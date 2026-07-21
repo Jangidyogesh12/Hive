@@ -1,7 +1,7 @@
 use crate::errors::DbError;
 use crate::storage::label_store::LabelStore;
 use crate::storage::overflow_store::OverflowStore;
-use crate::storage::page::format::{META_PAGE_ID, PageType};
+use crate::storage::page::format::{META_PAGE_ID, PAGE_SIZE, PageType};
 use crate::storage::page::layout;
 use crate::storage::page::record::{EdgeRecord, NodeRecord, PropertyEntry};
 use crate::storage::pager::Pager;
@@ -18,7 +18,17 @@ pub struct HiveDb {
     pub(crate) pager: Pager,
     pub(crate) wal: Wal,
     next_tx_id: AtomicU64,
+    commits_since_checkpoint: u64,
+    auto_checkpoint_interval: u64,
 }
+
+pub(crate) struct BeforeImage {
+    page_id: u32,
+    bytes: [u8; PAGE_SIZE],
+    newly_allocated: bool,
+}
+
+const DEFAULT_AUTO_CHECKPOINT_INTERVAL: u64 = 64;
 
 impl HiveDb {
     pub fn open(path: &Path) -> Result<Self, DbError> {
@@ -47,6 +57,8 @@ impl HiveDb {
             pager,
             wal,
             next_tx_id: AtomicU64::new(1),
+            commits_since_checkpoint: 0,
+            auto_checkpoint_interval: DEFAULT_AUTO_CHECKPOINT_INTERVAL,
         })
     }
 
@@ -68,6 +80,28 @@ impl HiveDb {
     /// Creates a new node with a label and returns its packed NodeId.
     pub fn create_node_with_label(&mut self, label_id: u32) -> Result<NodeId, DbError> {
         let tx_id = self.next_tx_id();
+        let mut before_images = Vec::new();
+
+        match self.create_node_with_label_inner(label_id, Some(&mut before_images)) {
+            Ok(node_id) => match self.commit_tx(tx_id) {
+                Ok(()) => Ok(node_id),
+                Err(err) => {
+                    self.rollback_pages(&before_images)?;
+                    Err(err)
+                }
+            },
+            Err(err) => {
+                self.rollback_pages(&before_images)?;
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn create_node_with_label_inner(
+        &mut self,
+        label_id: u32,
+        mut before_images: Option<&mut Vec<BeforeImage>>,
+    ) -> Result<NodeId, DbError> {
 
         let node_id_counter = {
             let meta_page = self.pager.get_page(META_PAGE_ID)?;
@@ -75,8 +109,9 @@ impl HiveDb {
             meta.node_count + 1
         };
 
-        let page_id = self.find_or_alloc_data_node_page()?;
+        let page_id = self.find_or_alloc_data_node_page(&mut before_images)?;
 
+        Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
         let page_buf = self.pager.get_page_mut(page_id)?;
         let mut record = NodeRecord::new(node_id_counter);
         record.label_id = label_id;
@@ -84,9 +119,7 @@ impl HiveDb {
         record.to_bytes(&mut record_buf)?;
         let slot = layout::insert_record(page_buf, &record_buf)?;
 
-        self.update_meta_node_count(node_id_counter)?;
-
-        self.commit_tx(tx_id)?;
+        self.update_meta_node_count(node_id_counter, &mut before_images)?;
 
         Ok(pack_record_id(page_id, slot.0))
     }
@@ -119,6 +152,30 @@ impl HiveDb {
         label_id: u32,
     ) -> Result<EdgeId, DbError> {
         let tx_id = self.next_tx_id();
+        let mut before_images = Vec::new();
+
+        match self.create_edge_with_label_inner(src_id, dst_id, label_id, Some(&mut before_images)) {
+            Ok(edge_id) => match self.commit_tx(tx_id) {
+                Ok(()) => Ok(edge_id),
+                Err(err) => {
+                    self.rollback_pages(&before_images)?;
+                    Err(err)
+                }
+            },
+            Err(err) => {
+                self.rollback_pages(&before_images)?;
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn create_edge_with_label_inner(
+        &mut self,
+        src_id: NodeId,
+        dst_id: NodeId,
+        label_id: u32,
+        mut before_images: Option<&mut Vec<BeforeImage>>,
+    ) -> Result<EdgeId, DbError> {
 
         let edge_id_counter = {
             let meta_page = self.pager.get_page(META_PAGE_ID)?;
@@ -126,8 +183,9 @@ impl HiveDb {
             meta.edge_count + 1
         };
 
-        let page_id = self.find_or_alloc_data_edge_page()?;
+        let page_id = self.find_or_alloc_data_edge_page(&mut before_images)?;
 
+        Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
         let page_buf = self.pager.get_page_mut(page_id)?;
         let mut edge = EdgeRecord::new(edge_id_counter);
         edge.src = src_id;
@@ -138,9 +196,7 @@ impl HiveDb {
         edge.to_bytes(&mut record_buf)?;
         let slot = layout::insert_record(page_buf, &record_buf)?;
 
-        self.update_meta_edge_count(edge_id_counter)?;
-
-        self.commit_tx(tx_id)?;
+        self.update_meta_edge_count(edge_id_counter, &mut before_images)?;
 
         Ok(pack_record_id(page_id, slot.0))
     }
@@ -169,6 +225,30 @@ impl HiveDb {
         value: &Value,
     ) -> Result<(), DbError> {
         let tx_id = self.next_tx_id();
+        let mut before_images = Vec::new();
+
+        match self.set_node_property_inner(node_id, key, value, Some(&mut before_images)) {
+            Ok(()) => match self.commit_tx(tx_id) {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    self.rollback_pages(&before_images)?;
+                    Err(err)
+                }
+            },
+            Err(err) => {
+                self.rollback_pages(&before_images)?;
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn set_node_property_inner(
+        &mut self,
+        node_id: NodeId,
+        key: &str,
+        value: &Value,
+        mut before_images: Option<&mut Vec<BeforeImage>>,
+    ) -> Result<(), DbError> {
 
         let (page_id, slot_id) = unpack_record_id(node_id);
         if slot_id == u16::MAX {
@@ -181,7 +261,7 @@ impl HiveDb {
 
         let long_value_offset = if value_type == value::LONG_STRING {
             if let Value::String(s) = value {
-                OverflowStore::write_string(&mut self.pager, s.as_bytes())? as u64
+                self.write_overflow_string(s.as_bytes(), &mut before_images)? as u64
             } else {
                 0
             }
@@ -206,10 +286,9 @@ impl HiveDb {
         let mut record_buf = vec![0u8; node.encoded_size()];
         node.to_bytes(&mut record_buf)?;
 
+        Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
         let page_buf = self.pager.get_page_mut(page_id)?;
         layout::update_record(page_buf, slot_id, &record_buf)?;
-
-        self.commit_tx(tx_id)?;
 
         Ok(())
     }
@@ -244,6 +323,30 @@ impl HiveDb {
         value: &Value,
     ) -> Result<(), DbError> {
         let tx_id = self.next_tx_id();
+        let mut before_images = Vec::new();
+
+        match self.set_edge_property_inner(edge_id, key, value, Some(&mut before_images)) {
+            Ok(()) => match self.commit_tx(tx_id) {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    self.rollback_pages(&before_images)?;
+                    Err(err)
+                }
+            },
+            Err(err) => {
+                self.rollback_pages(&before_images)?;
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn set_edge_property_inner(
+        &mut self,
+        edge_id: EdgeId,
+        key: &str,
+        value: &Value,
+        mut before_images: Option<&mut Vec<BeforeImage>>,
+    ) -> Result<(), DbError> {
 
         let (page_id, slot_id) = unpack_record_id(edge_id);
         if slot_id == u16::MAX {
@@ -256,7 +359,7 @@ impl HiveDb {
 
         let long_value_offset = if value_type == value::LONG_STRING {
             if let Value::String(s) = value {
-                OverflowStore::write_string(&mut self.pager, s.as_bytes())? as u64
+                self.write_overflow_string(s.as_bytes(), &mut before_images)? as u64
             } else {
                 0
             }
@@ -281,10 +384,9 @@ impl HiveDb {
         let mut record_buf = vec![0u8; edge.encoded_size()];
         edge.to_bytes(&mut record_buf)?;
 
+        Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
         let page_buf = self.pager.get_page_mut(page_id)?;
         layout::update_record(page_buf, slot_id, &record_buf)?;
-
-        self.commit_tx(tx_id)?;
 
         Ok(())
     }
@@ -311,7 +413,10 @@ impl HiveDb {
     }
 
     /// Finds an existing DataNode page with free space, or allocates a new one.
-    fn find_or_alloc_data_node_page(&mut self) -> Result<u32, DbError> {
+    fn find_or_alloc_data_node_page(
+        &mut self,
+        before_images: &mut Option<&mut Vec<BeforeImage>>,
+    ) -> Result<u32, DbError> {
         let root_page = {
             let meta_page = self.pager.get_page(META_PAGE_ID)?;
             let meta = layout::read_meta_header(meta_page);
@@ -326,16 +431,20 @@ impl HiveDb {
         }
 
         let new_page = self.pager.allocate_page()?;
+        Self::capture_allocated_page(&mut self.pager, before_images, new_page)?;
         let page_buf = self.pager.get_page_mut(new_page)?;
         layout::init_regular_page(page_buf, PageType::DataNode);
 
-        self.update_meta_root_data_page(new_page)?;
+        self.update_meta_root_data_page(new_page, before_images)?;
 
         Ok(new_page)
     }
 
     /// Finds an existing DataEdge page with free space, or allocates a new one.
-    fn find_or_alloc_data_edge_page(&mut self) -> Result<u32, DbError> {
+    fn find_or_alloc_data_edge_page(
+        &mut self,
+        before_images: &mut Option<&mut Vec<BeforeImage>>,
+    ) -> Result<u32, DbError> {
         let root_page = {
             let meta_page = self.pager.get_page(META_PAGE_ID)?;
             let meta = layout::read_meta_header(meta_page);
@@ -350,16 +459,22 @@ impl HiveDb {
         }
 
         let new_page = self.pager.allocate_page()?;
+        Self::capture_allocated_page(&mut self.pager, before_images, new_page)?;
         let page_buf = self.pager.get_page_mut(new_page)?;
         layout::init_regular_page(page_buf, PageType::DataEdge);
 
-        self.update_meta_root_edge_page(new_page)?;
+        self.update_meta_root_edge_page(new_page, before_images)?;
 
         Ok(new_page)
     }
 
     /// Updates the node count in the meta header.
-    fn update_meta_node_count(&mut self, count: u64) -> Result<(), DbError> {
+    fn update_meta_node_count(
+        &mut self,
+        count: u64,
+        before_images: &mut Option<&mut Vec<BeforeImage>>,
+    ) -> Result<(), DbError> {
+        Self::capture_before_image(&mut self.pager, before_images, META_PAGE_ID)?;
         let meta_page = self.pager.get_page_mut(META_PAGE_ID)?;
         let mut meta = layout::read_meta_header(meta_page);
         meta.node_count = count;
@@ -368,7 +483,12 @@ impl HiveDb {
     }
 
     /// Updates the edge count in the meta header.
-    fn update_meta_edge_count(&mut self, count: u64) -> Result<(), DbError> {
+    fn update_meta_edge_count(
+        &mut self,
+        count: u64,
+        before_images: &mut Option<&mut Vec<BeforeImage>>,
+    ) -> Result<(), DbError> {
+        Self::capture_before_image(&mut self.pager, before_images, META_PAGE_ID)?;
         let meta_page = self.pager.get_page_mut(META_PAGE_ID)?;
         let mut meta = layout::read_meta_header(meta_page);
         meta.edge_count = count;
@@ -377,7 +497,12 @@ impl HiveDb {
     }
 
     /// Updates the root_data_page pointer in the meta header.
-    fn update_meta_root_data_page(&mut self, page_id: u32) -> Result<(), DbError> {
+    fn update_meta_root_data_page(
+        &mut self,
+        page_id: u32,
+        before_images: &mut Option<&mut Vec<BeforeImage>>,
+    ) -> Result<(), DbError> {
+        Self::capture_before_image(&mut self.pager, before_images, META_PAGE_ID)?;
         let meta_page = self.pager.get_page_mut(META_PAGE_ID)?;
         let mut meta = layout::read_meta_header(meta_page);
         meta.root_data_page = page_id;
@@ -386,7 +511,12 @@ impl HiveDb {
     }
 
     /// Updates the root_edge_page pointer in the meta header.
-    fn update_meta_root_edge_page(&mut self, page_id: u32) -> Result<(), DbError> {
+    fn update_meta_root_edge_page(
+        &mut self,
+        page_id: u32,
+        before_images: &mut Option<&mut Vec<BeforeImage>>,
+    ) -> Result<(), DbError> {
+        Self::capture_before_image(&mut self.pager, before_images, META_PAGE_ID)?;
         let meta_page = self.pager.get_page_mut(META_PAGE_ID)?;
         let mut meta = layout::read_meta_header(meta_page);
         meta.root_edge_page = page_id;
@@ -397,6 +527,74 @@ impl HiveDb {
     /// Returns a new unique transaction ID.
     pub(crate) fn next_tx_id(&self) -> TxId {
         self.next_tx_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    fn capture_before_image(
+        pager: &mut Pager,
+        before_images: &mut Option<&mut Vec<BeforeImage>>,
+        page_id: u32,
+    ) -> Result<(), DbError> {
+        Self::capture_page_image(pager, before_images, page_id, false)
+    }
+
+    fn write_overflow_string(
+        &mut self,
+        data: &[u8],
+        before_images: &mut Option<&mut Vec<BeforeImage>>,
+    ) -> Result<u32, DbError> {
+        let page_id = self.pager.allocate_page()?;
+        Self::capture_allocated_page(&mut self.pager, before_images, page_id)?;
+        OverflowStore::write_string_to_page(&mut self.pager, page_id, data)?;
+        Ok(page_id)
+    }
+
+    fn capture_allocated_page(
+        pager: &mut Pager,
+        before_images: &mut Option<&mut Vec<BeforeImage>>,
+        page_id: u32,
+    ) -> Result<(), DbError> {
+        Self::capture_page_image(pager, before_images, page_id, true)
+    }
+
+    fn capture_page_image(
+        pager: &mut Pager,
+        before_images: &mut Option<&mut Vec<BeforeImage>>,
+        page_id: u32,
+        newly_allocated: bool,
+    ) -> Result<(), DbError> {
+        let Some(images) = before_images.as_deref_mut() else {
+            return Ok(());
+        };
+
+        if images.iter().any(|image| image.page_id == page_id) {
+            return Ok(());
+        }
+
+        let page = pager.read_page(page_id)?;
+        images.push(BeforeImage {
+            page_id,
+            bytes: page,
+            newly_allocated,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn rollback_pages(&mut self, before_images: &[BeforeImage]) -> Result<(), DbError> {
+        for image in before_images.iter().rev() {
+            self.pager.restore_page(image.page_id, &image.bytes)?;
+            self.pager.mark_clean(image.page_id)?;
+            if image.newly_allocated {
+                self.pager.free_page(image.page_id)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Sets the automatic checkpoint interval in committed transactions.
+    ///
+    /// `0` disables automatic checkpointing.
+    pub fn set_auto_checkpoint_interval(&mut self, interval: u64) {
+        self.auto_checkpoint_interval = interval;
     }
 
     /// Begins a new explicit transaction.
@@ -443,6 +641,13 @@ impl HiveDb {
             self.pager.mark_spilled(*page_id)?;
         }
 
+        self.commits_since_checkpoint += 1;
+        if self.auto_checkpoint_interval > 0
+            && self.commits_since_checkpoint >= self.auto_checkpoint_interval
+        {
+            self.checkpoint()?;
+        }
+
         Ok(())
     }
 
@@ -451,6 +656,7 @@ impl HiveDb {
         self.pager.flush_file()?;
         self.pager.sync_file()?;
         self.wal.checkpoint()?;
+        self.commits_since_checkpoint = 0;
         Ok(())
     }
 

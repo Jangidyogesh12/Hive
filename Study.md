@@ -55,6 +55,11 @@ Files: `core/wal/wal_entry.rs`, `wal.rs`, `recovery.rs`, `codec/*`, `utils.rs`
 - `WalEntry::Begin`, `PageImage`, `Commit`, `Checkpoint`.
 - CRC check, corrupt tail handling.
 - Recovery replays committed page images.
+- Write path now emits autocommit WAL records: `Begin -> PageImage(s) -> Commit -> sync`.
+- Page LSNs are stamped before WAL page images are captured.
+- Manual checkpoint flushes dirty pages to `hive.db` and truncates `wal.hive`.
+- Automatic checkpointing can truncate WAL after a configured commit interval.
+- Rollback frees newly allocated data/overflow pages for reuse in the current pager session.
 
 ### HiveDb
 
@@ -62,6 +67,10 @@ File: `core/db/hive_db.rs`
 
 - `HiveDb::open(path)` / `HiveDb::close()`.
 - Open invokes WAL recovery.
+- Mutating CRUD methods are WAL-backed autocommit operations.
+- `HiveDb::begin()` starts an explicit transaction with CRUD methods and `commit()` / `rollback()`.
+- `HiveDb::checkpoint()` manually flushes dirty pages and truncates WAL.
+- `HiveDb::set_auto_checkpoint_interval(n)` configures automatic checkpoints; `0` disables them.
 - `create_node()` — allocates a DataNode page, serializes NodeRecord, returns packed NodeId.
 - `get_node(node_id)` — unpacks ID, reads page, deserializes NodeRecord.
 - `create_edge(src, dst)` — allocates a DataEdge page, serializes EdgeRecord, returns packed EdgeId.
@@ -93,12 +102,17 @@ cargo fmt --check -p hive_core_testing
 
 Goal: writes must be recoverable after crash.
 
-Tasks:
-- Commit path: Begin -> dirty page LSNs -> WAL page images -> sync -> Commit.
-- Checkpoint path: flush WAL pages into `hive.db`, truncate WAL.
-- Rollback/before-image handling.
+Done:
+- Autocommit path: Begin -> page LSN stamps -> WAL page images -> Commit -> sync.
+- Manual checkpoint path: flush dirty pages into `hive.db`, sync, truncate WAL.
+- Rollback/before-image handling for transactional record and metadata pages.
 - Engine-generated transaction IDs.
-- Crash-style tests.
+- Public explicit transaction CRUD API (`tx.create_node`, `tx.set_node_property`, etc.).
+- Automatic checkpoint policy.
+- Reuse of rolled-back newly allocated data and overflow pages.
+- Crash-style tests for nodes, edges, properties, checkpoint, and LSN ordering.
+- Transaction commit, rollback, and automatic checkpoint tests.
+- Rollback page-reuse tests for newly allocated edge and overflow pages.
 
 ### 2. Query Executor
 
