@@ -89,6 +89,7 @@ pub struct Pager {
     page_cache: PageCache,
     pool: BufferPool,
     next_lsn: AtomicU64,
+    free_pages: Vec<PageId>,
 }
 
 impl Pager {
@@ -113,6 +114,7 @@ impl Pager {
             page_cache,
             pool,
             next_lsn: AtomicU64::new(1),
+            free_pages: Vec::new(),
         };
 
         let page_count = pager.page_count()?;
@@ -240,6 +242,18 @@ impl Pager {
         self.page_cache.mark_spilled(page_id)
     }
 
+    /// Marks a cached page clean after restoring it to an already-durable image.
+    pub fn mark_clean(&mut self, page_id: PageId) -> Result<(), DbError> {
+        self.page_cache.mark_clean(page_id)
+    }
+
+    /// Restores a cached page to the provided bytes.
+    pub fn restore_page(&mut self, page_id: PageId, data: &[u8; PAGE_SIZE]) -> Result<(), DbError> {
+        let page = self.get_page_mut(page_id)?;
+        page.copy_from_slice(data);
+        Ok(())
+    }
+
     /// Increments a page's pin count so cache eviction cannot remove it while in use.
     pub fn pin(&mut self, page_id: PageId) -> Result<(), DbError> {
         self.page_cache.pin(page_id)
@@ -257,12 +271,38 @@ impl Pager {
 
     /// Appends a new zero-filled page to the database file and returns its page id.
     pub fn allocate_page(&mut self) -> Result<PageId, DbError> {
+        if let Some(page_id) = self.free_pages.pop() {
+            let buf = [0u8; PAGE_SIZE];
+            self.file.write_page(page_id, &buf)?;
+            if self.page_cache.contains(page_id) {
+                self.restore_page(page_id, &buf)?;
+                self.page_cache.mark_clean(page_id)?;
+            }
+            return Ok(page_id);
+        }
+
         let page_id = self.page_count()? as PageId;
 
         let buf = [0u8; PAGE_SIZE];
         self.file.write_page(page_id, &buf)?;
 
         Ok(page_id)
+    }
+
+    /// Makes a newly allocated page available for reuse in this pager session.
+    pub fn free_page(&mut self, page_id: PageId) -> Result<(), DbError> {
+        if page_id == META_PAGE_ID || self.free_pages.contains(&page_id) {
+            return Ok(());
+        }
+
+        let buf = [0u8; PAGE_SIZE];
+        self.file.write_page(page_id, &buf)?;
+        if self.page_cache.contains(page_id) {
+            self.restore_page(page_id, &buf)?;
+            self.page_cache.mark_clean(page_id)?;
+        }
+        self.free_pages.push(page_id);
+        Ok(())
     }
 
     /// Writes one dirty cached page back to the main database file and marks it clean.

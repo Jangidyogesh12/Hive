@@ -16,6 +16,16 @@ impl OverflowStore {
     /// Writes a long string to a new overflow page and returns the page ID.
     pub fn write_string(pager: &mut Pager, data: &[u8]) -> Result<u32, DbError> {
         let page_id = pager.allocate_page()?;
+        Self::write_string_to_page(pager, page_id, data)?;
+        Ok(page_id)
+    }
+
+    /// Writes a long string into an existing overflow page.
+    pub fn write_string_to_page(
+        pager: &mut Pager,
+        page_id: u32,
+        data: &[u8],
+    ) -> Result<(), DbError> {
         let page_buf = pager.get_page_mut(page_id)?;
         layout::init_regular_page(page_buf, PageType::Overflow);
 
@@ -25,7 +35,7 @@ impl OverflowStore {
         page_buf[offset..offset + 4].copy_from_slice(&len.to_le_bytes());
         page_buf[offset + 4..offset + 4 + data.len()].copy_from_slice(data);
 
-        Ok(page_id)
+        Ok(())
     }
 
     /// Reads a long string from an overflow page.
