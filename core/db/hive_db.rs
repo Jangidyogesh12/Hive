@@ -102,7 +102,6 @@ impl HiveDb {
         label_id: u32,
         mut before_images: Option<&mut Vec<BeforeImage>>,
     ) -> Result<NodeId, DbError> {
-
         let node_id_counter = {
             let meta_page = self.pager.get_page(META_PAGE_ID)?;
             let meta = layout::read_meta_header(meta_page);
@@ -154,7 +153,8 @@ impl HiveDb {
         let tx_id = self.next_tx_id();
         let mut before_images = Vec::new();
 
-        match self.create_edge_with_label_inner(src_id, dst_id, label_id, Some(&mut before_images)) {
+        match self.create_edge_with_label_inner(src_id, dst_id, label_id, Some(&mut before_images))
+        {
             Ok(edge_id) => match self.commit_tx(tx_id) {
                 Ok(()) => Ok(edge_id),
                 Err(err) => {
@@ -176,7 +176,6 @@ impl HiveDb {
         label_id: u32,
         mut before_images: Option<&mut Vec<BeforeImage>>,
     ) -> Result<EdgeId, DbError> {
-
         let edge_id_counter = {
             let meta_page = self.pager.get_page(META_PAGE_ID)?;
             let meta = layout::read_meta_header(meta_page);
@@ -249,7 +248,6 @@ impl HiveDb {
         value: &Value,
         mut before_images: Option<&mut Vec<BeforeImage>>,
     ) -> Result<(), DbError> {
-
         let (page_id, slot_id) = unpack_record_id(node_id);
         if slot_id == u16::MAX {
             return Err(DbError::ReadError);
@@ -347,7 +345,6 @@ impl HiveDb {
         value: &Value,
         mut before_images: Option<&mut Vec<BeforeImage>>,
     ) -> Result<(), DbError> {
-
         let (page_id, slot_id) = unpack_record_id(edge_id);
         if slot_id == u16::MAX {
             return Err(DbError::ReadError);

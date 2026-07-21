@@ -78,12 +78,18 @@ impl<'a> Transaction<'a> {
     }
 
     /// Reads a node inside this transaction.
-    pub fn get_node(&mut self, node_id: NodeId) -> Result<crate::storage::page::record::NodeRecord, DbError> {
+    pub fn get_node(
+        &mut self,
+        node_id: NodeId,
+    ) -> Result<crate::storage::page::record::NodeRecord, DbError> {
         self.db.get_node(node_id)
     }
 
     /// Reads an edge inside this transaction.
-    pub fn get_edge(&mut self, edge_id: EdgeId) -> Result<crate::storage::page::record::EdgeRecord, DbError> {
+    pub fn get_edge(
+        &mut self,
+        edge_id: EdgeId,
+    ) -> Result<crate::storage::page::record::EdgeRecord, DbError> {
         self.db.get_edge(edge_id)
     }
 
