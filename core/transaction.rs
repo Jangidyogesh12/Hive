@@ -77,6 +77,36 @@ impl<'a> Transaction<'a> {
             .set_edge_property_inner(edge_id, key, value, Some(&mut self.before_images))
     }
 
+    pub fn delete_edge(&mut self, edge_id: EdgeId) -> Result<(), DbError> {
+        self.db
+            .delete_edge_inner(edge_id, Some(&mut self.before_images))
+    }
+
+    pub fn delete_node(&mut self, node_id: NodeId) -> Result<(), DbError> {
+        self.db
+            .delete_node_inner(node_id, Some(&mut self.before_images))
+    }
+
+    pub fn scan_nodes(
+        &mut self,
+    ) -> Result<Vec<(NodeId, crate::storage::page::record::NodeRecord)>, DbError> {
+        self.db.scan_nodes()
+    }
+
+    pub fn scan_edges(
+        &mut self,
+    ) -> Result<Vec<(EdgeId, crate::storage::page::record::EdgeRecord)>, DbError> {
+        self.db.scan_edges()
+    }
+
+    pub fn register_label(&mut self, name: &str) -> Result<u32, DbError> {
+        self.db.register_label(name)
+    }
+
+    pub fn get_label_name(&mut self, label_id: u32) -> Result<Option<String>, DbError> {
+        self.db.get_label_name(label_id)
+    }
+
     /// Reads a node inside this transaction.
     pub fn get_node(
         &mut self,

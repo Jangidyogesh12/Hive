@@ -72,6 +72,14 @@ impl HiveDb {
         LabelStore::get_label_name(&mut self.pager, label_id)
     }
 
+    /// Parses, plans, and executes a Cypher-like query as one database operation.
+    pub fn execute(&mut self, query: &str) -> Result<crate::query::result::QueryResult, DbError> {
+        let statement = crate::query::parser::parse(query)
+            .map_err(|err| DbError::QueryError(err.to_string()))?;
+        let plan = crate::query::planner::plan(statement)?;
+        crate::query::executor::execute(&plan, self)
+    }
+
     /// Creates a new node and returns its packed NodeId.
     pub fn create_node(&mut self) -> Result<NodeId, DbError> {
         self.create_node_with_label(0)
@@ -136,6 +144,28 @@ impl HiveDb {
             layout::read_record_bytes(page_buf, slot_id).ok_or(DbError::ReadError)?;
 
         NodeRecord::from_bytes(record_bytes)
+    }
+
+    /// Scans every live node record in DataNode pages.
+    pub fn scan_nodes(&mut self) -> Result<Vec<(NodeId, NodeRecord)>, DbError> {
+        let mut out = Vec::new();
+        let page_count = self.pager.page_count()? as u32;
+        for page_id in 1..page_count {
+            let page_buf = self.pager.get_page(page_id)?;
+            let header = layout::read_page_header(page_buf);
+            if header.page_type != PageType::DataNode {
+                continue;
+            }
+            for slot_id in 0..header.slot_count {
+                if let Some(bytes) = layout::read_record_bytes(page_buf, slot_id) {
+                    out.push((
+                        pack_record_id(page_id, slot_id),
+                        NodeRecord::from_bytes(bytes)?,
+                    ));
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Creates an edge from src to dst and returns its packed EdgeId.
@@ -213,6 +243,104 @@ impl HiveDb {
             layout::read_record_bytes(page_buf, slot_id).ok_or(DbError::ReadError)?;
 
         EdgeRecord::from_bytes(record_bytes)
+    }
+
+    /// Scans every live edge record in DataEdge pages.
+    pub fn scan_edges(&mut self) -> Result<Vec<(EdgeId, EdgeRecord)>, DbError> {
+        let mut out = Vec::new();
+        let page_count = self.pager.page_count()? as u32;
+        for page_id in 1..page_count {
+            let page_buf = self.pager.get_page(page_id)?;
+            let header = layout::read_page_header(page_buf);
+            if header.page_type != PageType::DataEdge {
+                continue;
+            }
+            for slot_id in 0..header.slot_count {
+                if let Some(bytes) = layout::read_record_bytes(page_buf, slot_id) {
+                    out.push((
+                        pack_record_id(page_id, slot_id),
+                        EdgeRecord::from_bytes(bytes)?,
+                    ));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn node_has_edges(&mut self, node_id: NodeId) -> Result<bool, DbError> {
+        Ok(self
+            .scan_edges()?
+            .into_iter()
+            .any(|(_, edge)| edge.src == node_id || edge.dst == node_id))
+    }
+
+    pub fn delete_edge(&mut self, edge_id: EdgeId) -> Result<(), DbError> {
+        let tx_id = self.next_tx_id();
+        let mut before_images = Vec::new();
+        match self.delete_edge_inner(edge_id, Some(&mut before_images)) {
+            Ok(()) => match self.commit_tx(tx_id) {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    self.rollback_pages(&before_images)?;
+                    Err(err)
+                }
+            },
+            Err(err) => {
+                self.rollback_pages(&before_images)?;
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn delete_edge_inner(
+        &mut self,
+        edge_id: EdgeId,
+        mut before_images: Option<&mut Vec<BeforeImage>>,
+    ) -> Result<(), DbError> {
+        let (page_id, slot_id) = unpack_record_id(edge_id);
+        if slot_id == u16::MAX {
+            return Err(DbError::ReadError);
+        }
+        Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
+        let page_buf = self.pager.get_page_mut(page_id)?;
+        layout::delete_record(page_buf, slot_id)
+    }
+
+    pub fn delete_node(&mut self, node_id: NodeId) -> Result<(), DbError> {
+        let tx_id = self.next_tx_id();
+        let mut before_images = Vec::new();
+        match self.delete_node_inner(node_id, Some(&mut before_images)) {
+            Ok(()) => match self.commit_tx(tx_id) {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    self.rollback_pages(&before_images)?;
+                    Err(err)
+                }
+            },
+            Err(err) => {
+                self.rollback_pages(&before_images)?;
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn delete_node_inner(
+        &mut self,
+        node_id: NodeId,
+        mut before_images: Option<&mut Vec<BeforeImage>>,
+    ) -> Result<(), DbError> {
+        if self.node_has_edges(node_id)? {
+            return Err(DbError::QueryError(
+                "cannot delete node with incident edges without DETACH DELETE".to_string(),
+            ));
+        }
+        let (page_id, slot_id) = unpack_record_id(node_id);
+        if slot_id == u16::MAX {
+            return Err(DbError::ReadError);
+        }
+        Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
+        let page_buf = self.pager.get_page_mut(page_id)?;
+        layout::delete_record(page_buf, slot_id)
     }
 
     /// Sets a property on a node. Updates or appends the property entry.

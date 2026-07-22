@@ -1,7 +1,9 @@
+use std::collections::HashSet;
+
 use crate::errors::DbError;
 use crate::query::ast::{
-    BinaryOp, Direction, Expression, MatchClause, NodePattern, PathPattern, Pattern,
-    RelationshipLength, ReturnItem, SetClause, Statement,
+    BinaryOp, Clause, Direction, Expression, MatchClause, NodePattern, PathPattern, Pattern,
+    RelationshipLength, ReturnClause, SetClause, Statement,
 };
 use crate::query::utils::expression_to_literal;
 use crate::value::Value;
@@ -9,16 +11,18 @@ use crate::value::Value;
 #[derive(Debug, Clone)]
 pub enum QueryPlan {
     CreateNode {
+        variable: Option<String>,
         node: NodePattern,
     },
     MergeNode {
+        variable: Option<String>,
         node: NodePattern,
     },
     CreateRelationship {
         src: NodePattern,
         dst: NodePattern,
         rel_type: String,
-        properties: Vec<(String, Value)>,
+        properties: Vec<(String, Expression)>,
     },
     ScanNodes {
         variable: String,
@@ -34,20 +38,20 @@ pub enum QueryPlan {
         to_label: Option<String>,
         hops: Option<RelationshipLength>,
         edge_var: Option<String>,
+        edge_filter: Option<Expression>,
     },
     Filter {
         condition: Expression,
     },
-    Return {
-        items: Vec<ReturnItem>,
-    },
-    DeleteEntity {
-        variable: String,
+    Return(ReturnClause),
+    Delete {
+        variables: Vec<String>,
+        detach: bool,
     },
     SetProperty {
         variable: String,
         key: String,
-        value: Value,
+        value: Expression,
     },
     Sequence(Vec<QueryPlan>),
 }
@@ -69,21 +73,64 @@ pub enum NodeIndexHint {
     },
 }
 
-/// Converts a parsed `Statement` AST into an executable `QueryPlan`.
 pub fn plan(stmt: Statement) -> Result<QueryPlan, DbError> {
-    match stmt {
-        Statement::Create(input) => plan_create(input),
-        Statement::Merge(input) => plan_merge(input),
-        Statement::Match(match_clause) => plan_match(*match_clause),
-        Statement::Delete(var) => Ok(QueryPlan::DeleteEntity { variable: var }),
-        Statement::Set(set_clause) => plan_set(*set_clause),
+    let mut steps = Vec::new();
+    let mut scope = HashSet::new();
+
+    for clause in stmt.clauses {
+        match clause {
+            Clause::Create(pattern) => plan_create(pattern, &mut steps, &mut scope)?,
+            Clause::Merge(pattern) => plan_merge(pattern, &mut steps, &mut scope)?,
+            Clause::Match(match_clause) => plan_match(match_clause, &mut steps, &mut scope)?,
+            Clause::Where(condition) => {
+                validate_expression_scope(&condition, &scope)?;
+                steps.push(QueryPlan::Filter { condition });
+            }
+            Clause::Set(set_clause) => plan_set(set_clause, &mut steps, &scope)?,
+            Clause::Delete(delete_clause) => {
+                for variable in &delete_clause.variables {
+                    if !scope.contains(variable) {
+                        return Err(DbError::QueryError(format!(
+                            "DELETE references unknown variable `{}`",
+                            variable
+                        )));
+                    }
+                }
+                steps.push(QueryPlan::Delete {
+                    variables: delete_clause.variables,
+                    detach: delete_clause.detach,
+                });
+            }
+            Clause::Return(return_clause) => {
+                for item in &return_clause.items {
+                    validate_expression_scope(&item.expression, &scope)?;
+                }
+                for item in &return_clause.order_by {
+                    validate_expression_scope(&item.expression, &scope)?;
+                }
+                steps.push(QueryPlan::Return(return_clause));
+            }
+        }
     }
+
+    Ok(QueryPlan::Sequence(steps))
 }
 
-/// Converts a CREATE node pattern into a `CreateNode` plan step.
-fn plan_create(input: Pattern) -> Result<QueryPlan, DbError> {
+fn plan_create(
+    input: Pattern,
+    steps: &mut Vec<QueryPlan>,
+    scope: &mut HashSet<String>,
+) -> Result<(), DbError> {
     match input {
-        Pattern::Node(node) => Ok(QueryPlan::CreateNode { node }),
+        Pattern::Node(node) => {
+            if let Some(variable) = &node.variable {
+                scope.insert(variable.clone());
+            }
+            steps.push(QueryPlan::CreateNode {
+                variable: node.variable.clone(),
+                node,
+            });
+        }
         Pattern::Path(PathPattern { start, segments }) => {
             if segments.len() != 1 {
                 return Err(DbError::QueryError(
@@ -91,153 +138,173 @@ fn plan_create(input: Pattern) -> Result<QueryPlan, DbError> {
                 ));
             }
             let first = &segments[0];
-
-            let rel = first.relationship.clone();
-            let rel_type = rel.rel_type.ok_or(DbError::QueryError(
-                "CREATE requires a label (e.g., CREATE (n:Person {...}))".to_string(),
-            ))?;
-
-            let mut properties = Vec::new();
-
-            for (key, expr) in &rel.properties {
-                let value = expression_to_literal(expr)?;
-                properties.push((key.clone(), value));
+            let rel_type = first
+                .relationship
+                .rel_type
+                .clone()
+                .ok_or(DbError::QueryError(
+                    "CREATE relationship requires a type".to_string(),
+                ))?;
+            if let Some(variable) = &start.variable {
+                scope.insert(variable.clone());
             }
-
-            Ok(QueryPlan::CreateRelationship {
+            if let Some(variable) = &first.relationship.variable {
+                scope.insert(variable.clone());
+            }
+            if let Some(variable) = &first.node.variable {
+                scope.insert(variable.clone());
+            }
+            steps.push(QueryPlan::CreateRelationship {
                 src: start,
                 dst: first.node.clone(),
                 rel_type,
-                properties,
-            })
+                properties: first
+                    .relationship
+                    .properties
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            });
         }
     }
+    Ok(())
 }
 
-fn plan_merge(input: Pattern) -> Result<QueryPlan, DbError> {
+fn plan_merge(
+    input: Pattern,
+    steps: &mut Vec<QueryPlan>,
+    scope: &mut HashSet<String>,
+) -> Result<(), DbError> {
     match input {
-        Pattern::Node(node) => Ok(QueryPlan::MergeNode { node }),
+        Pattern::Node(node) => {
+            if let Some(variable) = &node.variable {
+                scope.insert(variable.clone());
+            }
+            steps.push(QueryPlan::MergeNode {
+                variable: node.variable.clone(),
+                node,
+            });
+            Ok(())
+        }
         Pattern::Path(_) => Err(DbError::QueryError(
             "MERGE currently supports only single node patterns".to_string(),
         )),
     }
 }
 
-/// Converts a MATCH clause into a sequence of `ScanNodes`, `TraverseEdges`,
-/// `Filter`, and `Return` plan steps.
-fn plan_match(clause: MatchClause) -> Result<QueryPlan, DbError> {
-    let mut steps = Vec::new();
-
+fn plan_match(
+    clause: MatchClause,
+    steps: &mut Vec<QueryPlan>,
+    scope: &mut HashSet<String>,
+) -> Result<(), DbError> {
     match clause.pattern {
-        Pattern::Node(ref node) => {
-            let mut filter_conditions = Vec::new();
-
-            for (key, value_expr) in &node.properties {
-                filter_conditions.push(Expression::BinaryOp {
-                    left: Box::new(Expression::Property {
-                        variable: node.variable.clone().unwrap(),
-                        property: key.clone(),
-                    }),
-                    op: BinaryOp::Eq,
-                    right: Box::new(value_expr.clone()),
-                });
-            }
-
-            let combined_filter = merge_conditions(
-                filter_conditions,
-                clause.where_clause.clone().map(|w| w.condition),
-            );
-
-            let variable = node.variable.clone().unwrap();
+        Pattern::Node(node) => {
+            let variable = node.variable.clone().ok_or(DbError::QueryError(
+                "MATCH node requires a variable".to_string(),
+            ))?;
+            let filter = node_property_filter(&variable, &node.properties);
             steps.push(QueryPlan::ScanNodes {
                 variable: variable.clone(),
                 label: node.label.clone(),
-                index_hint: node_index_hint(&variable, &node.label, &combined_filter),
-                filter: combined_filter,
+                index_hint: node_index_hint(&variable, &node.label, &filter),
+                filter,
             });
+            scope.insert(variable);
         }
         Pattern::Path(PathPattern { start, segments }) => {
-            let mut first_filter = Vec::new();
-            for (key, value_expr) in &start.properties {
-                first_filter.push(Expression::BinaryOp {
-                    left: Box::new(Expression::Property {
-                        variable: start.variable.clone().unwrap(),
-                        property: key.clone(),
-                    }),
-                    op: BinaryOp::Eq,
-                    right: Box::new(value_expr.clone()),
-                });
-            }
-
-            let start_variable = start.variable.clone().unwrap();
-            let start_filter = if first_filter.is_empty() {
-                None
-            } else {
-                merge_conditions(first_filter, None)
-            };
-
+            let start_variable = start.variable.clone().ok_or(DbError::QueryError(
+                "MATCH path start node requires a variable".to_string(),
+            ))?;
+            let start_filter = node_property_filter(&start_variable, &start.properties);
             steps.push(QueryPlan::ScanNodes {
                 variable: start_variable.clone(),
                 label: start.label.clone(),
                 index_hint: node_index_hint(&start_variable, &start.label, &start_filter),
                 filter: start_filter,
             });
+            scope.insert(start_variable.clone());
 
             let mut from_var = start_variable;
-
-            for seg in &segments {
-                let to_variable = seg.node.variable.clone().unwrap();
-
+            for seg in segments {
+                if seg.relationship.hops.is_some() {
+                    return Err(DbError::QueryError(
+                        "variable-length relationship execution is not implemented".to_string(),
+                    ));
+                }
+                let to_var = seg.node.variable.clone().ok_or(DbError::QueryError(
+                    "MATCH path destination node requires a variable".to_string(),
+                ))?;
+                let edge_var = seg.relationship.variable.clone();
                 steps.push(QueryPlan::TraverseEdges {
                     from_var: from_var.clone(),
                     edge_type: seg.relationship.rel_type.clone(),
                     direction: seg.relationship.direction.clone(),
-                    to_var: to_variable.clone(),
+                    to_var: to_var.clone(),
                     to_label: seg.node.label.clone(),
                     hops: seg.relationship.hops.clone(),
-                    edge_var: seg.relationship.variable.clone(),
+                    edge_var: edge_var.clone(),
+                    edge_filter: edge_property_filter(
+                        edge_var.as_deref(),
+                        &seg.relationship.properties,
+                    ),
                 });
-
-                let mut node_filter = Vec::new();
-
-                for (key, value_expr) in &seg.node.properties {
-                    node_filter.push(Expression::BinaryOp {
-                        left: Box::new(Expression::Property {
-                            variable: to_variable.clone(),
-                            property: key.clone(),
-                        }),
-                        op: BinaryOp::Eq,
-                        right: Box::new(value_expr.clone()),
-                    });
+                scope.insert(to_var.clone());
+                if let Some(edge_var) = edge_var {
+                    scope.insert(edge_var);
                 }
-
-                if !node_filter.is_empty() {
-                    steps.push(QueryPlan::Filter {
-                        condition: merge_conditions(node_filter, None)
-                            .ok_or(DbError::QueryError("Empty filter".to_string()))?,
-                    });
+                if let Some(filter) = node_property_filter(&to_var, &seg.node.properties) {
+                    steps.push(QueryPlan::Filter { condition: filter });
                 }
-
-                from_var = to_variable;
-            }
-
-            if let Some(where_clause) = clause.where_clause {
-                steps.push(QueryPlan::Filter {
-                    condition: where_clause.condition,
-                });
+                from_var = to_var;
             }
         }
     }
+    Ok(())
+}
 
-    steps.push(QueryPlan::Return {
-        items: clause.return_clause.items,
-    });
-
-    if steps.len() == 1 {
-        Ok(steps.into_iter().next().unwrap())
-    } else {
-        Ok(QueryPlan::Sequence(steps))
+fn plan_set(
+    clause: SetClause,
+    steps: &mut Vec<QueryPlan>,
+    scope: &HashSet<String>,
+) -> Result<(), DbError> {
+    if !scope.contains(&clause.variable) {
+        return Err(DbError::QueryError(format!(
+            "SET references unknown variable `{}`",
+            clause.variable
+        )));
     }
+    validate_expression_scope(&clause.value, scope)?;
+    steps.push(QueryPlan::SetProperty {
+        variable: clause.variable,
+        key: clause.property,
+        value: clause.value,
+    });
+    Ok(())
+}
+
+fn node_property_filter(
+    variable: &str,
+    properties: &std::collections::HashMap<String, Expression>,
+) -> Option<Expression> {
+    let conditions = properties
+        .iter()
+        .map(|(key, value_expr)| Expression::BinaryOp {
+            left: Box::new(Expression::Property {
+                variable: variable.to_string(),
+                property: key.clone(),
+            }),
+            op: BinaryOp::Eq,
+            right: Box::new(value_expr.clone()),
+        });
+    and_chain(conditions.collect())
+}
+
+fn edge_property_filter(
+    variable: Option<&str>,
+    properties: &std::collections::HashMap<String, Expression>,
+) -> Option<Expression> {
+    let variable = variable?;
+    node_property_filter(variable, properties)
 }
 
 fn node_index_hint(
@@ -248,7 +315,6 @@ fn node_index_hint(
     let property_match = filter
         .as_ref()
         .and_then(|expr| exact_property_match(variable, expr));
-
     match (label.clone(), property_match) {
         (Some(label), Some((key, value))) => NodeIndexHint::LabelAndProperty { label, key, value },
         (Some(label), None) => NodeIndexHint::Label { label },
@@ -289,36 +355,27 @@ fn exact_property_match(variable: &str, expr: &Expression) -> Option<(String, Va
     }
 }
 
-/// Converts a SET clause into a `SetProperty` plan step.
-fn plan_set(clause: SetClause) -> Result<QueryPlan, DbError> {
-    let value = expression_to_literal(&clause.value)?;
-    Ok(QueryPlan::SetProperty {
-        variable: clause.variable,
-        key: clause.property,
-        value,
-    })
-}
-
-/// Merges inline property equality conditions with an optional WHERE clause
-/// into a single AND-chained expression, if any conditions exist.
-fn merge_conditions(
-    prop_conditions: Vec<Expression>,
-    where_condition: Option<Expression>,
-) -> Option<Expression> {
-    match (prop_conditions.is_empty(), where_condition) {
-        (true, None) => None,
-        (true, Some(w)) => Some(w),
-        (false, None) => Some(and_chain(prop_conditions)),
-        (false, Some(w)) => {
-            let mut all = prop_conditions;
-            all.push(w);
-            Some(and_chain(all))
+fn validate_expression_scope(expr: &Expression, scope: &HashSet<String>) -> Result<(), DbError> {
+    match expr {
+        Expression::Variable(variable) if !scope.contains(variable) => Err(DbError::QueryError(
+            format!("expression references unknown variable `{}`", variable),
+        )),
+        Expression::Property { variable, .. } if !scope.contains(variable) => {
+            Err(DbError::QueryError(format!(
+                "expression references unknown variable `{}`",
+                variable
+            )))
         }
+        Expression::BinaryOp { left, right, .. } => {
+            validate_expression_scope(left, scope)?;
+            validate_expression_scope(right, scope)
+        }
+        Expression::UnaryOp { expr, .. } => validate_expression_scope(expr, scope),
+        _ => Ok(()),
     }
 }
 
-/// Chains a list of expressions with AND binary operators.
-fn and_chain(conditions: Vec<Expression>) -> Expression {
+fn and_chain(conditions: Vec<Expression>) -> Option<Expression> {
     conditions
         .into_iter()
         .reduce(|left, right| Expression::BinaryOp {
@@ -326,5 +383,4 @@ fn and_chain(conditions: Vec<Expression>) -> Expression {
             op: BinaryOp::And,
             right: Box::new(right),
         })
-        .unwrap()
 }

@@ -9,7 +9,8 @@
 //!
 //! 1. Parse Cypher with [`query::parser::parse`].
 //! 2. Convert the AST to a plan with [`query::planner::plan`].
-//! 3. Execute the plan with [`query::executor::Executor`].
+//! 3. Execute the plan with [`query::executor::execute`] or use
+//!    [`db::hive_db::HiveDb::execute`] for the public parse-plan-execute API.
 //!
 //! # Direct storage API
 //!
