@@ -1,19 +1,24 @@
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Statement {
+pub struct Statement {
+    pub clauses: Vec<Clause>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Clause {
     Create(Pattern),
+    Match(MatchClause),
+    Where(Expression),
+    Set(SetClause),
+    Delete(DeleteClause),
     Merge(Pattern),
-    Match(Box<MatchClause>),
-    Delete(String),
-    Set(Box<SetClause>),
+    Return(ReturnClause),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchClause {
     pub pattern: Pattern,
-    pub where_clause: Option<WhereClause>,
-    pub return_clause: ReturnClause,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,6 +26,12 @@ pub struct SetClause {
     pub variable: String,
     pub property: String,
     pub value: Expression,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeleteClause {
+    pub variables: Vec<String>,
+    pub detach: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,13 +76,17 @@ pub enum Direction {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct WhereClause {
-    pub condition: Expression,
+pub struct ReturnClause {
+    pub items: Vec<ReturnItem>,
+    pub order_by: Vec<OrderItem>,
+    pub skip: Option<usize>,
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ReturnClause {
-    pub items: Vec<ReturnItem>,
+pub struct OrderItem {
+    pub expression: Expression,
+    pub descending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
