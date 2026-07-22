@@ -84,9 +84,10 @@ fn repl(db: &mut HiveDb, mut db_path: PathBuf) -> Result<(), String> {
                 db_path = next_db_path;
                 println!("Connected to {}", db_path.display());
             }
-            _ => {
-                println!("Query execution not yet implemented (migrating to page-based storage).");
-            }
+            _ => match db.execute(input) {
+                Ok(result) => println!("{result}"),
+                Err(error) => println!("{error}"),
+            },
         }
     }
 }
