@@ -16,6 +16,13 @@ pub enum TokenType {
     Not,
     True,
     False,
+    Order,
+    By,
+    Limit,
+    Skip,
+    Asc,
+    Desc,
+    Detach,
 
     // Symbols
     LParen,    // (
@@ -62,7 +69,7 @@ impl TokenType {
 }
 
 impl fmt::Display for TokenType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             TokenType::Create => write!(f, "CREATE"),
             TokenType::Match => write!(f, "MATCH"),
@@ -77,6 +84,13 @@ impl fmt::Display for TokenType {
             TokenType::Not => write!(f, "NOT"),
             TokenType::True => write!(f, "true"),
             TokenType::False => write!(f, "false"),
+            TokenType::Order => write!(f, "ORDER"),
+            TokenType::By => write!(f, "BY"),
+            TokenType::Limit => write!(f, "LIMIT"),
+            TokenType::Skip => write!(f, "SKIP"),
+            TokenType::Asc => write!(f, "ASC"),
+            TokenType::Desc => write!(f, "DESC"),
+            TokenType::Detach => write!(f, "DETACH"),
             TokenType::LParen => write!(f, "("),
             TokenType::RParen => write!(f, ")"),
             TokenType::LBrace => write!(f, "{{"),
