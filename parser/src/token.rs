@@ -1,5 +1,8 @@
 use std::fmt;
 
+/// Token categories produced by the lexer.
+///
+/// The parser consumes these tokens instead of reading raw characters directly.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenType {
     // Keywords
@@ -60,6 +63,7 @@ pub enum TokenType {
 }
 
 impl TokenType {
+    /// Returns true for literal value tokens that can become AST expressions.
     pub fn is_literal(&self) -> bool {
         matches!(
             self,
@@ -69,6 +73,7 @@ impl TokenType {
 }
 
 impl fmt::Display for TokenType {
+    /// Formats tokens for parser errors and debug output.
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             TokenType::Create => write!(f, "CREATE"),
@@ -123,30 +128,40 @@ impl fmt::Display for TokenType {
 
 #[derive(Debug, Clone)]
 pub struct Token<'a> {
+    /// Classified token kind, such as `Match`, `Identifier`, or `Integer`.
     pub kind: TokenType,
+    /// Byte range where this token appeared in the original query.
     pub span: Span,
+    /// Original query slice for this token. This borrows from lexer input.
     pub text: &'a str,
 }
 
+/// Byte range inside the original query text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
+    /// Inclusive start byte offset.
     pub start: usize,
+    /// Exclusive end byte offset.
     pub end: usize,
 }
 
 impl Span {
+    /// Creates a new byte span.
     pub fn new(start: usize, end: usize) -> Self {
         Self { start, end }
     }
 
+    /// Returns span length in bytes.
     pub fn len(&self) -> usize {
         self.end - self.start
     }
 
+    /// Returns true when the span covers no bytes.
     pub fn is_empty(&self) -> bool {
         self.start == self.end
     }
 
+    /// Converts this span to the diagnostics type used by `miette`.
     pub fn to_miette(&self) -> miette::SourceSpan {
         miette::SourceSpan::from(self.start)
     }

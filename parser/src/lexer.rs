@@ -1,30 +1,41 @@
 use crate::error::ParseError;
 use crate::token::{Span, Token, TokenType};
 
+/// Converts raw query text into a stream of tokens.
+///
+/// The lexer borrows the input string so each token can keep a cheap `text`
+/// slice pointing back into the original query.
 pub struct Lexer<'a> {
+    /// Original query text being tokenized.
     input: &'a str,
+    /// Current byte offset into `input`.
     pos: usize,
 }
 
 impl<'a> Lexer<'a> {
+    /// Creates a lexer at the beginning of `input`.
     pub fn new(input: &'a str) -> Self {
         Self { input, pos: 0 }
     }
 
+    /// Returns the current character without consuming it.
     fn peek(&self) -> Option<char> {
         self.input[self.pos..].chars().next()
     }
 
+    /// Returns a character ahead of the current position without consuming it.
     fn peek_ahead(&self, offset: usize) -> Option<char> {
         self.input[self.pos..].chars().nth(offset)
     }
 
+    /// Consumes and returns the current character, advancing by its UTF-8 width.
     fn advance(&mut self) -> Option<char> {
         let ch = self.input[self.pos..].chars().next()?;
         self.pos += ch.len_utf8();
         Some(ch)
     }
 
+    /// Skips whitespace and `//` line comments before reading the next token.
     fn skip_whitespace_and_comments(&mut self) {
         loop {
             match self.peek() {
@@ -44,6 +55,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Reads a double-quoted string literal and handles simple escape sequences.
     fn read_string(&mut self, start: usize) -> Result<Token<'a>, ParseError> {
         self.advance(); // consume opening quote
         let mut value = String::new();
@@ -89,6 +101,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Reads an integer or floating-point literal.
     fn read_number(&mut self, start: usize) -> Result<Token<'a>, ParseError> {
         let mut is_float = false;
 
@@ -132,6 +145,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Reads an identifier and classifies it as a keyword when it matches one.
     fn read_identifier(&mut self, start: usize) -> Token<'a> {
         while let Some(ch) = self.peek() {
             if ch.is_ascii_alphanumeric() || ch == '_' {
@@ -156,6 +170,13 @@ impl<'a> Lexer<'a> {
             "NOT" => TokenType::Not,
             "TRUE" => TokenType::True,
             "FALSE" => TokenType::False,
+            "ORDER" => TokenType::Order,
+            "BY" => TokenType::By,
+            "LIMIT" => TokenType::Limit,
+            "SKIP" => TokenType::Skip,
+            "ASC" => TokenType::Asc,
+            "DESC" => TokenType::Desc,
+            "DETACH" => TokenType::Detach,
             _ => TokenType::Identifier(text.to_string()),
         };
 
@@ -166,6 +187,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Reads and returns the next token from the input.
     pub fn next_token(&mut self) -> Result<Token<'a>, ParseError> {
         self.skip_whitespace_and_comments();
 
@@ -364,6 +386,7 @@ impl<'a> Lexer<'a> {
 impl<'a> Iterator for Lexer<'a> {
     type Item = Result<Token<'a>, ParseError>;
 
+    /// Allows callers to iterate over lexer tokens until EOF.
     fn next(&mut self) -> Option<Self::Item> {
         let token = self.next_token();
         match &token {
