@@ -11,7 +11,7 @@ Rule:
 - Do not skip a step unless it is explicitly not needed for the production target.
 - A step is complete only when code, tests, rollback behavior, and recovery behavior are done.
 
-## Step 1: Make Label Metadata Transactional
+## [x] Step 1: Make Label Metadata Transactional
 
 Why this is next:
 - Labels are used by `CREATE`, `MATCH`, `MERGE`, indexes, constraints, and query results.
@@ -55,7 +55,7 @@ Definition of done:
 - Committed query-created labels survive WAL recovery.
 - Existing label tests still pass.
 
-## Step 2: Add A Transactional Property-Key Dictionary
+## [ ] Step 2: Add A Transactional Property-Key Dictionary
 
 Why this comes after Step 1:
 - It should follow the same metadata transaction pattern as labels.
@@ -100,7 +100,7 @@ Definition of done:
 - Duplicate key registration returns the existing key id.
 - Tests cover node and edge property-key registration.
 
-## Step 3: Replace Property Hash-Only Semantics With Collision-Safe Key Identity
+## [ ] Step 3: Replace Property Hash-Only Semantics With Collision-Safe Key Identity
 
 Why this comes after Step 2:
 - You need real property-key IDs before making property lookup collision-safe.
@@ -139,7 +139,7 @@ Definition of done:
 - Tests prove two distinct property names cannot incorrectly read the same value due to hash-only lookup.
 - Existing property read/write tests pass.
 
-## Step 4: Add Property Name Introspection And Whole-Entity Return Support
+## [ ] Step 4: Add Property Name Introspection And Whole-Entity Return Support
 
 Why this comes after Step 3:
 - Introspection needs property-key names to reconstruct entity property maps.
@@ -174,7 +174,7 @@ Definition of done:
 - Entity return includes ID, label/type, and named properties.
 - Tests cover node and edge entity returns.
 
-## Step 5: Harden Query Transaction Semantics
+## [ ] Step 5: Harden Query Transaction Semantics
 
 Why this comes after metadata steps:
 - Query rollback cannot be production-grade until all query-touched metadata is transactional.
@@ -214,7 +214,7 @@ Definition of done:
 - Read-only queries do not append WAL entries.
 - Crash/recovery tests prove committed query mutations recover exactly once.
 
-## Step 6: Complete Storage Scan/Delete Production Tests
+## [ ] Step 6: Complete Storage Scan/Delete Production Tests
 
 Why this comes after transaction hardening:
 - Delete behavior must be proven under rollback and recovery before adjacency chains and indexes depend on it.
@@ -253,7 +253,7 @@ Definition of done:
 - Scan/delete tests cover normal, rollback, reopen, and recovery behavior.
 - Meta count semantics are documented as allocation counters or live counters.
 
-## Step 7: Add Parser Production Test Coverage
+## [ ] Step 7: Add Parser Production Test Coverage
 
 Why this comes after storage/query metadata foundations:
 - The parser already supports a subset, but production requires confidence that accepted syntax is intentional and rejected syntax fails clearly.
@@ -289,7 +289,7 @@ Definition of done:
 - Unsupported syntax fails with useful errors.
 - Parser tests can be run independently.
 
-## Step 8: Add Planner Production Test Coverage
+## [ ] Step 8: Add Planner Production Test Coverage
 
 Why this comes after parser tests:
 - Planner tests depend on stable AST output.
@@ -323,7 +323,7 @@ Definition of done:
 - Planner tests cover create, match, traversal, where, set, delete, merge, return, order/limit.
 - Invalid plans fail before executor runs.
 
-## Step 9: Complete Executor Production Subset Tests And Semantics
+## [ ] Step 9: Complete Executor Production Subset Tests And Semantics
 
 Why this comes after planner tests:
 - Executor correctness depends on stable planned steps.
@@ -362,7 +362,7 @@ Definition of done:
 - Mutating query failures rollback all changes.
 - Query result shape is stable and documented.
 
-## Step 10: Maintain Adjacency Chains On Edge Create/Delete
+## [ ] Step 10: Maintain Adjacency Chains On Edge Create/Delete
 
 Why this comes after delete and transaction tests:
 - Adjacency chains are extra persistent pointers and must rollback/recover correctly.
@@ -400,7 +400,7 @@ Definition of done:
 - Edge create/delete updates chains correctly.
 - Rollback and recovery preserve chain correctness.
 
-## Step 11: Add Persistent Freelist And Record Reuse Policy
+## [ ] Step 11: Add Persistent Freelist And Record Reuse Policy
 
 Why this comes after adjacency chains:
 - Space reuse must not break graph pointers or recovery.
@@ -437,7 +437,7 @@ Definition of done:
 - Deleted record space is safely reusable.
 - Compaction does not invalidate live record IDs unless explicitly designed.
 
-## Step 12: Implement Durable B-Tree Page Storage
+## [ ] Step 12: Implement Durable B-Tree Page Storage
 
 Why this comes after metadata and storage correctness:
 - Index keys need stable property-key metadata and recovery-safe page mutation.
@@ -480,7 +480,7 @@ Definition of done:
 - Inserts and deletes survive WAL recovery.
 - Split/root growth tests pass.
 
-## Step 13: Add Index Types And Maintenance
+## [ ] Step 13: Add Index Types And Maintenance
 
 Why this comes after B-tree storage:
 - Index types need a durable lookup structure first.
@@ -521,7 +521,7 @@ Definition of done:
 - Index maintenance is rollback-safe.
 - Indexes survive reopen and recovery.
 
-## Step 14: Add Unique Constraints
+## [ ] Step 14: Add Unique Constraints
 
 Why this comes after index maintenance:
 - Unique constraints are special indexes with conflict rules.
@@ -558,7 +558,7 @@ Definition of done:
 - Rollback does not leave stale uniqueness entries.
 - Recovery preserves committed constraints.
 
-## Step 15: Complete Production-Safe MERGE
+## [ ] Step 15: Complete Production-Safe MERGE
 
 Why this comes after unique constraints:
 - Production `MERGE` must not create duplicates under deterministic uniqueness rules.
@@ -595,7 +595,7 @@ Definition of done:
 - `ON CREATE SET` and `ON MATCH SET` work.
 - Relationship `MERGE` is deterministic and tested.
 
-## Step 16: Add Query Parameters
+## [ ] Step 16: Add Query Parameters
 
 Why this comes before broader language expansion:
 - Parameters are needed for embedded DB APIs and safer application queries.
@@ -630,7 +630,7 @@ Definition of done:
 - `$name` works in `CREATE`, `MATCH`, `WHERE`, `SET`, and `MERGE`.
 - Missing parameter returns a query error.
 
-## Step 17: Add WITH Pipeline Clause
+## [ ] Step 17: Add WITH Pipeline Clause
 
 Why this comes after parameters and stable executor pipeline:
 - `WITH` changes variable scope and row projection between query stages.
@@ -662,7 +662,7 @@ Definition of done:
 - `MATCH ... WITH ... MATCH ... RETURN ...` works.
 - Variables not projected by `WITH` are not visible later.
 
-## Step 18: Add Aggregation And COUNT
+## [ ] Step 18: Add Aggregation And COUNT
 
 Why this comes after WITH:
 - Aggregation needs clear grouping scope and projection rules.
@@ -698,7 +698,7 @@ Definition of done:
 - `MATCH (n) RETURN COUNT(n)` works.
 - Grouped aggregation works for simple keys.
 
-## Step 19: Add OPTIONAL MATCH
+## [ ] Step 19: Add OPTIONAL MATCH
 
 Why this comes after aggregation/WITH foundation:
 - Optional matching needs row-preserving null-extension behavior.
@@ -728,7 +728,7 @@ Definition of done:
 - Optional matches preserve rows without matches.
 - Returned missing properties are null.
 
-## Step 20: Add REMOVE And Multiple Labels
+## [ ] Step 20: Add REMOVE And Multiple Labels
 
 Why this comes after metadata and indexes:
 - Label/property removal must update dictionaries, records, and indexes consistently.
@@ -762,7 +762,7 @@ Definition of done:
 - Nodes can have multiple labels.
 - Label/property removal is transactional and index-safe.
 
-## Step 21: Add Variable-Length Traversal
+## [ ] Step 21: Add Variable-Length Traversal
 
 Why this comes after adjacency chains:
 - Without adjacency chains, variable-length traversal is too expensive and harder to bound.
@@ -797,7 +797,7 @@ Definition of done:
 - Variable-length traversal returns correct paths/nodes.
 - Traversal has safety limits and tests for cycles.
 
-## Step 22: Add Concurrency And Isolation
+## [ ] Step 22: Add Concurrency And Isolation
 
 Why this comes after single-threaded correctness:
 - Concurrent correctness is hard unless single-writer semantics, recovery, indexes, and storage invariants are already stable.
@@ -834,7 +834,7 @@ Definition of done:
 - Writers are exclusive.
 - Recovery/checkpointing remains correct.
 
-## Step 23: Add Observability And Integrity Tools
+## [ ] Step 23: Add Observability And Integrity Tools
 
 Why this comes near the end:
 - Debug tools are most useful once storage/index/query invariants are stable.
@@ -875,7 +875,7 @@ Definition of done:
 - Query plans can be printed before execution.
 - Index consistency can be verified.
 
-## Step 24: Continuous Production Test Matrix
+## [ ] Step 24: Continuous Production Test Matrix
 
 Why this is continuous:
 - Every previous step must add tests before it is considered complete.

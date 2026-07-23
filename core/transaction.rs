@@ -100,7 +100,8 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn register_label(&mut self, name: &str) -> Result<u32, DbError> {
-        self.db.register_label(name)
+        self.db
+            .register_label_inner(name, Some(&mut self.before_images))
     }
 
     pub fn get_label_name(&mut self, label_id: u32) -> Result<Option<String>, DbError> {

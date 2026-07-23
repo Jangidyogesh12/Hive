@@ -1,7 +1,9 @@
 use crate::errors::DbError;
 use crate::storage::label_store::LabelStore;
 use crate::storage::overflow_store::OverflowStore;
-use crate::storage::page::format::{META_PAGE_ID, MetaHeader, PAGE_SIZE, PageType};
+use crate::storage::page::format::{
+    META_PAGE_ID, MetaHeader, PAGE_SIZE, PageType, SLOT_ENTRY_SIZE,
+};
 use crate::storage::page::layout;
 use crate::storage::page::record::{EdgeRecord, NodeRecord, PropertyEntry};
 use crate::storage::pager::Pager;
@@ -64,7 +66,55 @@ impl HiveDb {
 
     /// Registers a label name and returns its numeric ID.
     pub fn register_label(&mut self, name: &str) -> Result<u32, DbError> {
-        LabelStore::register_label(&mut self.pager, name)
+        let tx_id = self.next_tx_id();
+        let mut before_images = Vec::new();
+
+        match self.register_label_inner(name, Some(&mut before_images)) {
+            Ok(label_id) => match self.commit_tx(tx_id) {
+                Ok(()) => Ok(label_id),
+                Err(err) => {
+                    self.rollback_pages(&before_images)?;
+                    Err(err)
+                }
+            },
+            Err(err) => {
+                self.rollback_pages(&before_images)?;
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn register_label_inner(
+        &mut self,
+        name: &str,
+        mut before_images: Option<&mut Vec<BeforeImage>>,
+    ) -> Result<u32, DbError> {
+        if let Some(existing_id) = LabelStore::find_label(&mut self.pager, name)? {
+            return Ok(existing_id);
+        }
+
+        let label_id = {
+            let meta_page = self.pager.get_page(META_PAGE_ID)?;
+            let meta = layout::read_meta_header(meta_page);
+            meta.label_count as u32 + 1
+        };
+
+        let entry_buf = LabelStore::encode_label_entry(label_id, name)?;
+        let page_id = self.find_or_alloc_page(
+            &mut before_images,
+            PageType::LabelData,
+            entry_buf.len() + SLOT_ENTRY_SIZE,
+        )?;
+
+        Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
+        let page_buf = self.pager.get_page_mut(page_id)?;
+        layout::insert_record(page_buf, &entry_buf)?;
+
+        self.update_meta_header(&mut before_images, |meta| {
+            meta.label_count = label_id as u64;
+        })?;
+
+        Ok(label_id)
     }
 
     /// Returns the label name for a given ID.
@@ -116,11 +166,16 @@ impl HiveDb {
             meta.node_count + 1
         };
 
-        let page_id = self.find_or_alloc_page(&mut before_images, PageType::DataNode)?;
+        let record = NodeRecord::new(node_id_counter);
+        let page_id = self.find_or_alloc_page(
+            &mut before_images,
+            PageType::DataNode,
+            record.encoded_size() + SLOT_ENTRY_SIZE,
+        )?;
 
         Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
         let page_buf = self.pager.get_page_mut(page_id)?;
-        let mut record = NodeRecord::new(node_id_counter);
+        let mut record = record;
         record.label_id = label_id;
         let mut record_buf = vec![0u8; record.encoded_size()];
         record.to_bytes(&mut record_buf)?;
@@ -212,14 +267,19 @@ impl HiveDb {
             meta.edge_count + 1
         };
 
-        let page_id = self.find_or_alloc_page(&mut before_images, PageType::DataEdge)?;
-
-        Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
-        let page_buf = self.pager.get_page_mut(page_id)?;
         let mut edge = EdgeRecord::new(edge_id_counter);
         edge.src = src_id;
         edge.dst = dst_id;
         edge.label_id = label_id;
+
+        let page_id = self.find_or_alloc_page(
+            &mut before_images,
+            PageType::DataEdge,
+            edge.encoded_size() + SLOT_ENTRY_SIZE,
+        )?;
+
+        Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
+        let page_buf = self.pager.get_page_mut(page_id)?;
 
         let mut record_buf = vec![0u8; edge.encoded_size()];
         edge.to_bytes(&mut record_buf)?;
@@ -542,6 +602,7 @@ impl HiveDb {
         &mut self,
         before_images: &mut Option<&mut Vec<BeforeImage>>,
         page_type: PageType,
+        required_space: usize,
     ) -> Result<u32, DbError> {
         let root_page = {
             let meta_page = self.pager.get_page(META_PAGE_ID)?;
@@ -551,7 +612,7 @@ impl HiveDb {
 
         if root_page != 0 {
             let page_buf = self.pager.get_page(root_page)?;
-            if layout::get_free_space(page_buf) > 0 {
+            if layout::get_free_space(page_buf) >= required_space {
                 return Ok(root_page);
             }
         }
