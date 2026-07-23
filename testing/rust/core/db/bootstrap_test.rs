@@ -21,6 +21,7 @@ fn pager_creates_meta_page_on_first_open() {
     assert_eq!(meta.node_count, 0);
     assert_eq!(meta.edge_count, 0);
     assert_eq!(meta.property_count, 0);
+    assert_eq!(meta.label_count, 0);
 
     drop(pager);
     cleanup_dir(&dir);

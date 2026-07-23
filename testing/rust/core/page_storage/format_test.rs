@@ -115,7 +115,8 @@ fn meta_header_new_sets_defaults() {
     assert_eq!(meta.node_count, 0);
     assert_eq!(meta.edge_count, 0);
     assert_eq!(meta.property_count, 0);
-    assert_eq!(meta.root_data_page, 0);
+    assert_eq!(meta.label_count, 0);
+    assert_eq!(meta.root_node_page, 0);
     assert_eq!(meta.freelist_head, 0);
 }
 
@@ -126,7 +127,8 @@ fn meta_header_byte_roundtrip() {
     meta.node_count = 1000;
     meta.edge_count = 500;
     meta.property_count = 2000;
-    meta.root_data_page = 2;
+    meta.label_count = 3000;
+    meta.root_node_page = 2;
     meta.root_edge_page = 25;
     meta.freelist_head = 30;
     meta.schema_version = 3;
@@ -140,7 +142,8 @@ fn meta_header_byte_roundtrip() {
     assert_eq!(decoded.node_count, 1000);
     assert_eq!(decoded.edge_count, 500);
     assert_eq!(decoded.property_count, 2000);
-    assert_eq!(decoded.root_data_page, 2);
+    assert_eq!(decoded.label_count, 3000);
+    assert_eq!(decoded.root_node_page, 2);
     assert_eq!(decoded.root_edge_page, 25);
     assert_eq!(decoded.freelist_head, 30);
     assert_eq!(decoded.schema_version, 3);

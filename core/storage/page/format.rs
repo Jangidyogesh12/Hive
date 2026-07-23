@@ -115,7 +115,8 @@ pub struct MetaHeader {
     pub node_count: u64,
     pub edge_count: u64,
     pub property_count: u64,
-    pub root_data_page: u32,
+    pub label_count: u64,
+    pub root_node_page: u32,
     pub root_edge_page: u32,
     pub root_label_page: u32,
     pub root_string_page: u32,
@@ -136,7 +137,8 @@ impl MetaHeader {
             node_count: 0,
             edge_count: 0,
             property_count: 0,
-            root_data_page: 0,
+            label_count: 0,
+            root_node_page: 0,
             root_edge_page: 0,
             root_label_page: 0,
             root_string_page: 0,
@@ -159,14 +161,15 @@ impl MetaHeader {
             node_count: serializer::get_u64_le(buf, 28),
             edge_count: serializer::get_u64_le(buf, 36),
             property_count: serializer::get_u64_le(buf, 44),
-            root_data_page: serializer::get_u32_le(buf, 52),
-            root_edge_page: serializer::get_u32_le(buf, 56),
-            root_label_page: serializer::get_u32_le(buf, 60),
-            root_string_page: serializer::get_u32_le(buf, 64),
-            freelist_head: serializer::get_u32_le(buf, 68),
-            schema_version: serializer::get_u32_le(buf, 72),
-            checksum: serializer::get_u32_le(buf, 76),
-            lsn: serializer::get_u32_le(buf, 80),
+            label_count: serializer::get_u64_le(buf, 52),
+            root_node_page: serializer::get_u32_le(buf, 60),
+            root_edge_page: serializer::get_u32_le(buf, 64),
+            root_label_page: serializer::get_u32_le(buf, 68),
+            root_string_page: serializer::get_u32_le(buf, 72),
+            freelist_head: serializer::get_u32_le(buf, 76),
+            schema_version: serializer::get_u32_le(buf, 80),
+            checksum: serializer::get_u32_le(buf, 84),
+            lsn: serializer::get_u32_le(buf, 88),
         }
     }
 
@@ -180,14 +183,15 @@ impl MetaHeader {
         serializer::put_u64_le(buf, 28, self.node_count);
         serializer::put_u64_le(buf, 36, self.edge_count);
         serializer::put_u64_le(buf, 44, self.property_count);
-        serializer::put_u32_le(buf, 52, self.root_data_page);
-        serializer::put_u32_le(buf, 56, self.root_edge_page);
-        serializer::put_u32_le(buf, 60, self.root_label_page);
-        serializer::put_u32_le(buf, 64, self.root_string_page);
-        serializer::put_u32_le(buf, 68, self.freelist_head);
-        serializer::put_u32_le(buf, 72, self.schema_version);
-        serializer::put_u32_le(buf, 76, self.checksum);
-        serializer::put_u32_le(buf, 80, self.lsn);
+        serializer::put_u64_le(buf, 52, self.label_count);
+        serializer::put_u32_le(buf, 60, self.root_node_page);
+        serializer::put_u32_le(buf, 64, self.root_edge_page);
+        serializer::put_u32_le(buf, 68, self.root_label_page);
+        serializer::put_u32_le(buf, 72, self.root_string_page);
+        serializer::put_u32_le(buf, 76, self.freelist_head);
+        serializer::put_u32_le(buf, 80, self.schema_version);
+        serializer::put_u32_le(buf, 84, self.checksum);
+        serializer::put_u32_le(buf, 88, self.lsn);
     }
 }
 

@@ -1,7 +1,7 @@
 use crate::errors::DbError;
 use crate::storage::label_store::LabelStore;
 use crate::storage::overflow_store::OverflowStore;
-use crate::storage::page::format::{META_PAGE_ID, PAGE_SIZE, PageType};
+use crate::storage::page::format::{META_PAGE_ID, MetaHeader, PAGE_SIZE, PageType};
 use crate::storage::page::layout;
 use crate::storage::page::record::{EdgeRecord, NodeRecord, PropertyEntry};
 use crate::storage::pager::Pager;
@@ -116,7 +116,7 @@ impl HiveDb {
             meta.node_count + 1
         };
 
-        let page_id = self.find_or_alloc_data_node_page(&mut before_images)?;
+        let page_id = self.find_or_alloc_page(&mut before_images, PageType::DataNode)?;
 
         Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
         let page_buf = self.pager.get_page_mut(page_id)?;
@@ -212,7 +212,7 @@ impl HiveDb {
             meta.edge_count + 1
         };
 
-        let page_id = self.find_or_alloc_data_edge_page(&mut before_images)?;
+        let page_id = self.find_or_alloc_page(&mut before_images, PageType::DataEdge)?;
 
         Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
         let page_buf = self.pager.get_page_mut(page_id)?;
@@ -537,15 +537,16 @@ impl HiveDb {
         Ok(Value::from_bytes(entry.value_type, entry.value_inline))
     }
 
-    /// Finds an existing DataNode page with free space, or allocates a new one.
-    fn find_or_alloc_data_node_page(
+    /// Finds an existing DataEdge page with free space, or allocates a new one.
+    fn find_or_alloc_page(
         &mut self,
         before_images: &mut Option<&mut Vec<BeforeImage>>,
+        page_type: PageType,
     ) -> Result<u32, DbError> {
         let root_page = {
             let meta_page = self.pager.get_page(META_PAGE_ID)?;
             let meta = layout::read_meta_header(meta_page);
-            meta.root_data_page
+            Self::root_page_id_for_type(meta, page_type)?
         };
 
         if root_page != 0 {
@@ -558,39 +559,38 @@ impl HiveDb {
         let new_page = self.pager.allocate_page()?;
         Self::capture_allocated_page(&mut self.pager, before_images, new_page)?;
         let page_buf = self.pager.get_page_mut(new_page)?;
-        layout::init_regular_page(page_buf, PageType::DataNode);
+        layout::init_regular_page(page_buf, page_type);
 
-        self.update_meta_root_data_page(new_page, before_images)?;
+        match page_type {
+            PageType::DataEdge => {
+                self.update_meta_header(before_images, |meta| {
+                    meta.root_edge_page = new_page;
+                })?;
+            }
+            PageType::DataNode => {
+                self.update_meta_header(before_images, |meta| {
+                    meta.root_node_page = new_page;
+                })?;
+            }
+            PageType::LabelData => {
+                self.update_meta_header(before_images, |meta| {
+                    meta.root_label_page = new_page;
+                })?;
+            }
+            _ => {}
+        }
 
         Ok(new_page)
     }
 
-    /// Finds an existing DataEdge page with free space, or allocates a new one.
-    fn find_or_alloc_data_edge_page(
-        &mut self,
-        before_images: &mut Option<&mut Vec<BeforeImage>>,
-    ) -> Result<u32, DbError> {
-        let root_page = {
-            let meta_page = self.pager.get_page(META_PAGE_ID)?;
-            let meta = layout::read_meta_header(meta_page);
-            meta.root_edge_page
-        };
-
-        if root_page != 0 {
-            let page_buf = self.pager.get_page(root_page)?;
-            if layout::get_free_space(page_buf) > 0 {
-                return Ok(root_page);
-            }
+    // Gets the page_id of the root page of particular type (Node Page, Edge Page, Label Page)
+    fn root_page_id_for_type(meta: MetaHeader, page_type: PageType) -> Result<u32, DbError> {
+        match page_type {
+            PageType::DataNode => Ok(meta.root_node_page),
+            PageType::DataEdge => Ok(meta.root_edge_page),
+            PageType::LabelData => Ok(meta.root_label_page),
+            _ => Err(DbError::WriteError),
         }
-
-        let new_page = self.pager.allocate_page()?;
-        Self::capture_allocated_page(&mut self.pager, before_images, new_page)?;
-        let page_buf = self.pager.get_page_mut(new_page)?;
-        layout::init_regular_page(page_buf, PageType::DataEdge);
-
-        self.update_meta_root_edge_page(new_page, before_images)?;
-
-        Ok(new_page)
     }
 
     /// Updates the node count in the meta header.
@@ -621,30 +621,16 @@ impl HiveDb {
         Ok(())
     }
 
-    /// Updates the root_data_page pointer in the meta header.
-    fn update_meta_root_data_page(
+    /// Updates the meta header after capturing its before imager.
+    fn update_meta_header(
         &mut self,
-        page_id: u32,
         before_images: &mut Option<&mut Vec<BeforeImage>>,
+        update: impl FnOnce(&mut MetaHeader),
     ) -> Result<(), DbError> {
         Self::capture_before_image(&mut self.pager, before_images, META_PAGE_ID)?;
         let meta_page = self.pager.get_page_mut(META_PAGE_ID)?;
         let mut meta = layout::read_meta_header(meta_page);
-        meta.root_data_page = page_id;
-        layout::write_meta_header(meta_page, &meta);
-        Ok(())
-    }
-
-    /// Updates the root_edge_page pointer in the meta header.
-    fn update_meta_root_edge_page(
-        &mut self,
-        page_id: u32,
-        before_images: &mut Option<&mut Vec<BeforeImage>>,
-    ) -> Result<(), DbError> {
-        Self::capture_before_image(&mut self.pager, before_images, META_PAGE_ID)?;
-        let meta_page = self.pager.get_page_mut(META_PAGE_ID)?;
-        let mut meta = layout::read_meta_header(meta_page);
-        meta.root_edge_page = page_id;
+        update(&mut meta);
         layout::write_meta_header(meta_page, &meta);
         Ok(())
     }

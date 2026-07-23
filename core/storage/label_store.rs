@@ -3,8 +3,9 @@
 /// Each label entry is `[label_id: u32][name_len: u16][name: bytes]`.
 /// The root label page ID is stored in MetaHeader.root_label_page.
 use crate::errors::DbError;
+use crate::storage::page::format::META_PAGE_ID;
 use crate::storage::page::format::PageHeader;
-use crate::storage::page::format::{META_PAGE_ID, PageType};
+use crate::storage::page::format::PageType;
 use crate::storage::page::layout;
 use crate::storage::pager::Pager;
 
@@ -23,7 +24,7 @@ impl LabelStore {
         let label_id = {
             let meta_page = pager.get_page(META_PAGE_ID)?;
             let meta = layout::read_meta_header(meta_page);
-            meta.property_count as u32 + 1
+            meta.label_count as u32 + 1
         };
 
         let page_id = Self::find_or_alloc_label_page(pager)?;
@@ -39,10 +40,9 @@ impl LabelStore {
         let page_buf = pager.get_page_mut(page_id)?;
         layout::insert_record(page_buf, &entry_buf)?;
 
-        // Reuse property_count as label_count in meta header
         let meta_page = pager.get_page_mut(META_PAGE_ID)?;
         let mut meta = layout::read_meta_header(meta_page);
-        meta.property_count = label_id as u64;
+        meta.label_count = label_id as u64;
         layout::write_meta_header(meta_page, &meta);
 
         Ok(label_id)
@@ -119,7 +119,7 @@ impl LabelStore {
         Ok(None)
     }
 
-    /// Finds an existing LabelData page with free space, or allocates a new one.
+    /// Finds the root LabelData page, or allocates it if none exists.
     fn find_or_alloc_label_page(pager: &mut Pager) -> Result<u32, DbError> {
         let root_page = {
             let meta_page = pager.get_page(META_PAGE_ID)?;
