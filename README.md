@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="public/hive_logo.png" alt="hive_logo" />
+  <img src="public/hive_logo.svg" alt="Hive" />
 </p>
 
 # Hive
