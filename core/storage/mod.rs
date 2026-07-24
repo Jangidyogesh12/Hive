@@ -4,3 +4,4 @@ pub mod overflow_store;
 pub mod page;
 pub mod page_cache;
 pub mod pager;
+pub mod property_key_store;

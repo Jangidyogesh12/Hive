@@ -108,6 +108,19 @@ impl<'a> Transaction<'a> {
         self.db.get_label_name(label_id)
     }
 
+    pub fn register_property_key(&mut self, name: &str) -> Result<u32, DbError> {
+        self.db
+            .register_property_key_inner(name, Some(&mut self.before_images))
+    }
+
+    pub fn get_property_key_name(&mut self, key_id: u32) -> Result<Option<String>, DbError> {
+        self.db.get_property_key_name(key_id)
+    }
+
+    pub fn find_property_key(&mut self, name: &str) -> Result<Option<u32>, DbError> {
+        self.db.find_property_key(name)
+    }
+
     /// Reads a node inside this transaction.
     pub fn get_node(
         &mut self,

@@ -7,6 +7,7 @@ use crate::storage::page::format::{
 use crate::storage::page::layout;
 use crate::storage::page::record::{EdgeRecord, NodeRecord, PropertyEntry};
 use crate::storage::pager::Pager;
+use crate::storage::property_key_store::PropertyKeyStore;
 use crate::transaction::Transaction;
 use crate::types::{EdgeId, NodeId, pack_record_id, unpack_record_id};
 use crate::value::{self, Value};
@@ -120,6 +121,67 @@ impl HiveDb {
     /// Returns the label name for a given ID.
     pub fn get_label_name(&mut self, label_id: u32) -> Result<Option<String>, DbError> {
         LabelStore::get_label_name(&mut self.pager, label_id)
+    }
+
+    /// Registers a property-key name and returns its numeric ID.
+    pub fn register_property_key(&mut self, name: &str) -> Result<u32, DbError> {
+        let tx_id = self.next_tx_id();
+        let mut before_images = Vec::new();
+
+        match self.register_property_key_inner(name, Some(&mut before_images)) {
+            Ok(key_id) => match self.commit_tx(tx_id) {
+                Ok(()) => Ok(key_id),
+                Err(err) => {
+                    self.rollback_pages(&before_images)?;
+                    Err(err)
+                }
+            },
+            Err(err) => {
+                self.rollback_pages(&before_images)?;
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn register_property_key_inner(
+        &mut self,
+        name: &str,
+        mut before_images: Option<&mut Vec<BeforeImage>>,
+    ) -> Result<u32, DbError> {
+        if let Some(existing_id) = PropertyKeyStore::find_property_key(&mut self.pager, name)? {
+            return Ok(existing_id);
+        }
+
+        let key_id = {
+            let meta_page = self.pager.get_page(META_PAGE_ID)?;
+            let meta = layout::read_meta_header(meta_page);
+            meta.property_count as u32 + 1
+        };
+
+        let entry_buf = PropertyKeyStore::encode_property_key_entry(key_id, name)?;
+        let page_id = self.find_or_alloc_page(
+            &mut before_images,
+            PageType::PropertyKeyData,
+            entry_buf.len() + SLOT_ENTRY_SIZE,
+        )?;
+
+        Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
+        let page_buf = self.pager.get_page_mut(page_id)?;
+        layout::insert_record(page_buf, &entry_buf)?;
+
+        self.update_meta_header(&mut before_images, |meta| {
+            meta.property_count = key_id as u64;
+        })?;
+
+        Ok(key_id)
+    }
+
+    pub fn get_property_key_name(&mut self, key_id: u32) -> Result<Option<String>, DbError> {
+        PropertyKeyStore::get_property_key_name(&mut self.pager, key_id)
+    }
+
+    pub fn find_property_key(&mut self, name: &str) -> Result<Option<u32>, DbError> {
+        PropertyKeyStore::find_property_key(&mut self.pager, name)
     }
 
     /// Parses, plans, and executes a Cypher-like query as one database operation.
@@ -442,6 +504,7 @@ impl HiveDb {
         }
 
         let mut node = self.get_node(node_id)?;
+        self.register_property_key_inner(key, before_images.as_deref_mut())?;
         let key_hash = crate::value::hash_key(key);
         let (value_type, value_inline) = value.to_inline_bytes();
 
@@ -539,6 +602,7 @@ impl HiveDb {
         }
 
         let mut edge = self.get_edge(edge_id)?;
+        self.register_property_key_inner(key, before_images.as_deref_mut())?;
         let key_hash = crate::value::hash_key(key);
         let (value_type, value_inline) = value.to_inline_bytes();
 
@@ -638,6 +702,11 @@ impl HiveDb {
                     meta.root_label_page = new_page;
                 })?;
             }
+            PageType::PropertyKeyData => {
+                self.update_meta_header(before_images, |meta| {
+                    meta.root_string_page = new_page;
+                })?;
+            }
             _ => {}
         }
 
@@ -650,6 +719,7 @@ impl HiveDb {
             PageType::DataNode => Ok(meta.root_node_page),
             PageType::DataEdge => Ok(meta.root_edge_page),
             PageType::LabelData => Ok(meta.root_label_page),
+            PageType::PropertyKeyData => Ok(meta.root_string_page),
             _ => Err(DbError::WriteError),
         }
     }

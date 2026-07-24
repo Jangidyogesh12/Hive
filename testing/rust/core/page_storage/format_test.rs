@@ -10,9 +10,9 @@ fn page_type_from_u8_maps_all_valid_codes() {
         (0x00, PageType::Meta),
         (0x01, PageType::DataNode),
         (0x02, PageType::DataEdge),
-        (0x03, PageType::DataProperty),
         (0x04, PageType::StringData),
         (0x05, PageType::LabelData),
+        (0x06, PageType::PropertyKeyData),
         (0x0A, PageType::IndexInterior),
         (0x0B, PageType::IndexLeaf),
         (0x0F, PageType::Freelist),
@@ -28,7 +28,7 @@ fn page_type_from_u8_maps_all_valid_codes() {
 
 #[test]
 fn page_type_from_u8_returns_none_for_invalid_codes() {
-    let invalid = [0x06, 0x07, 0x08, 0x09, 0x0C, 0x0D, 0x0E, 0x11, 0x20, 0xFF];
+    let invalid = [0x03, 0x07, 0x08, 0x09, 0x0C, 0x0D, 0x0E, 0x11, 0x20, 0xFF];
     for code in &invalid {
         assert!(
             PageType::from_u8(*code).is_none(),
@@ -82,9 +82,9 @@ fn page_header_roundtrip_all_types() {
     let types = [
         PageType::DataNode,
         PageType::DataEdge,
-        PageType::DataProperty,
         PageType::StringData,
         PageType::LabelData,
+        PageType::PropertyKeyData,
         PageType::IndexInterior,
         PageType::IndexLeaf,
         PageType::Freelist,

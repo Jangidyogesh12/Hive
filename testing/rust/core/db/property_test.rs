@@ -172,3 +172,155 @@ fn properties_persist_after_reopen() {
 
     cleanup_dir(&dir);
 }
+
+#[test]
+fn register_and_get_property_key() {
+    let dir = temp_dir("property_key_register");
+    let mut db = HiveDb::open(&dir).unwrap();
+
+    let name_id = db.register_property_key("name").unwrap();
+    assert_eq!(name_id, 1);
+
+    let age_id = db.register_property_key("age").unwrap();
+    assert_eq!(age_id, 2);
+
+    assert_eq!(
+        db.get_property_key_name(name_id).unwrap(),
+        Some("name".into())
+    );
+    assert_eq!(
+        db.get_property_key_name(age_id).unwrap(),
+        Some("age".into())
+    );
+    assert_eq!(db.find_property_key("name").unwrap(), Some(name_id));
+
+    db.close();
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn register_same_property_key_returns_existing_id() {
+    let dir = temp_dir("property_key_dedup");
+    let mut db = HiveDb::open(&dir).unwrap();
+
+    let id1 = db.register_property_key("name").unwrap();
+    let id2 = db.register_property_key("name").unwrap();
+    assert_eq!(id1, id2);
+
+    db.close();
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn property_key_registration_rolls_back() {
+    let dir = temp_dir("property_key_rollback");
+    let mut db = HiveDb::open(&dir).unwrap();
+
+    let key_id;
+    {
+        let mut tx = db.begin().unwrap();
+        key_id = tx.register_property_key("rolled_back").unwrap();
+        tx.rollback().unwrap();
+    }
+
+    assert_eq!(db.get_property_key_name(key_id).unwrap(), None);
+    assert_eq!(db.find_property_key("rolled_back").unwrap(), None);
+
+    db.close();
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn node_property_registers_key_transactionally() {
+    let dir = temp_dir("node_property_key_transactional");
+    let mut db = HiveDb::open(&dir).unwrap();
+    let node = db.create_node().unwrap();
+
+    {
+        let mut tx = db.begin().unwrap();
+        tx.set_node_property(node, "rolled_back", &Value::Integer(1))
+            .unwrap();
+        tx.rollback().unwrap();
+    }
+    assert_eq!(db.find_property_key("rolled_back").unwrap(), None);
+
+    db.set_node_property(node, "committed", &Value::Integer(2))
+        .unwrap();
+    let key_id = db.find_property_key("committed").unwrap().unwrap();
+    assert_eq!(
+        db.get_property_key_name(key_id).unwrap(),
+        Some("committed".into())
+    );
+
+    db.close();
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn edge_property_registers_key() {
+    let dir = temp_dir("edge_property_key_register");
+    let mut db = HiveDb::open(&dir).unwrap();
+    let src = db.create_node().unwrap();
+    let dst = db.create_node().unwrap();
+    let edge = db.create_edge(src, dst).unwrap();
+
+    db.set_edge_property(edge, "since", &Value::Integer(2024))
+        .unwrap();
+
+    let key_id = db.find_property_key("since").unwrap().unwrap();
+    assert_eq!(
+        db.get_property_key_name(key_id).unwrap(),
+        Some("since".into())
+    );
+
+    db.close();
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn property_keys_persist_after_reopen() {
+    let dir = temp_dir("property_key_persist");
+
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        let node = db.create_node().unwrap();
+        db.set_node_property(node, "name", &Value::String("Alice".into()))
+            .unwrap();
+        db.close();
+    }
+
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        let key_id = db.find_property_key("name").unwrap().unwrap();
+        assert_eq!(
+            db.get_property_key_name(key_id).unwrap(),
+            Some("name".into())
+        );
+        db.close();
+    }
+
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn committed_property_key_survives_wal_recovery() {
+    let dir = temp_dir("property_key_wal_recovery");
+
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        let key_id = db.register_property_key("recovered").unwrap();
+        assert_eq!(key_id, 1);
+        drop(db);
+    }
+
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        assert_eq!(
+            db.get_property_key_name(1).unwrap(),
+            Some("recovered".into())
+        );
+        db.close();
+    }
+
+    cleanup_dir(&dir);
+}
