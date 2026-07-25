@@ -55,7 +55,7 @@ Definition of done:
 - Committed query-created labels survive WAL recovery.
 - Existing label tests still pass.
 
-## [ ] Step 2: Add A Transactional Property-Key Dictionary
+## [x] Step 2: Add A Transactional Property-Key Dictionary
 
 Why this comes after Step 1:
 - It should follow the same metadata transaction pattern as labels.
@@ -63,11 +63,17 @@ Why this comes after Step 1:
 
 What to implement:
 - Add `core/storage/property_key_store.rs`.
-- Store entries like `key_id -> key_name` in dedicated property-key pages.
+- Store entries like `key_id -> key_name` in dedicated `PropertyKeyData` pages.
 - Add `HiveDb::register_property_key(name)` and `Transaction::register_property_key(name)`.
 - Register property keys inside `set_node_property_inner` and `set_edge_property_inner` or at the query layer before writes.
 - Ensure property-key writes participate in rollback and WAL commit.
 - Add `get_property_key_name(key_id)` and `find_property_key(name)`.
+
+Implemented notes:
+- `PropertyKeyData` pages store only property-key dictionary metadata, for example `1 -> "name"`.
+- Property values are still stored inline in `NodeRecord.properties` and `EdgeRecord.properties`; long strings still use overflow pages.
+- There is no separate `DataProperty` page type in the current production plan because external property-value pages are not part of these ordered steps.
+- Step 3 is still required before node/edge records directly reference property keys by `key_id`; Step 2 only creates and maintains the transactional dictionary.
 
 Files to study/change:
 - `core/storage/label_store.rs`
