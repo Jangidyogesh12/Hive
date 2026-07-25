@@ -10,6 +10,10 @@ Hive stores a property graph directly on local disk using flat binary files. It 
 
 ## Status
 
+> **Note:** Hive is under active development and is not ready for production use.
+> The storage format, API, and query language are still evolving and may change
+> without notice between versions.
+
 Hive is pre-release software targeting `v0.1.0`.
 
 Implemented today:
