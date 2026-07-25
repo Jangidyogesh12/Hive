@@ -77,19 +77,3 @@ impl Value {
         }
     }
 }
-
-/// Computes the FNV-1a 64-bit hash of the given key string, used for
-/// property key lookups.
-pub fn hash_key(key: &str) -> u64 {
-    const FNV_OFFSET: u64 = 14695981039346656037;
-    const FNV_PRIME: u64 = 1099511628211;
-
-    let mut hash = FNV_OFFSET;
-
-    for byte in key.bytes() {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-
-    hash
-}

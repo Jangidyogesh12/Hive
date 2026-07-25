@@ -3,10 +3,10 @@ use crate::storage::page::record::{EdgeRecord, NodeRecord, PropertyEntry, Proper
 use crate::types::NIL_ID;
 use crate::value::Value;
 
-fn make_property(key_hash: u64, value: &Value) -> PropertyEntry {
+fn make_property(key_id: u32, value: &Value) -> PropertyEntry {
     let (value_type, value_inline) = value.to_inline_bytes();
     PropertyEntry {
-        key_hash,
+        key_id,
         value_type,
         value_inline,
         long_value_offset: 0,
@@ -57,7 +57,7 @@ fn node_record_with_integer_property_roundtrip() {
 
     let decoded = NodeRecord::from_bytes(&buf).unwrap();
     assert_eq!(decoded.properties.len(), 1);
-    assert_eq!(decoded.properties[0].key_hash, 100);
+    assert_eq!(decoded.properties[0].key_id, 100);
     assert_eq!(decoded.properties[0].value_type, crate::value::INTEGER);
     let val = Value::from_bytes(
         decoded.properties[0].value_type,
@@ -111,7 +111,7 @@ fn node_record_with_many_properties_roundtrip() {
     let mut node = NodeRecord::new(1);
     for i in 0..100 {
         node.properties
-            .push(make_property(i as u64, &Value::Integer(i as i64)));
+            .push(make_property(i as u32, &Value::Integer(i as i64)));
     }
 
     let size = node.encoded_size();
@@ -121,7 +121,7 @@ fn node_record_with_many_properties_roundtrip() {
     let decoded = NodeRecord::from_bytes(&buf).unwrap();
     assert_eq!(decoded.properties.len(), 100);
     for i in 0..100 {
-        assert_eq!(decoded.properties[i].key_hash, i as u64);
+        assert_eq!(decoded.properties[i].key_id, i as u32);
         let val = Value::from_bytes(
             decoded.properties[i].value_type,
             decoded.properties[i].value_inline,
@@ -193,7 +193,7 @@ fn edge_record_different_from_node_record() {
 #[test]
 fn property_record_roundtrip_all_fields() {
     let mut prop = PropertyRecord::new(42);
-    prop.key_hash = 0xABCD;
+    prop.key_id = 7;
     prop.key_offset = 500;
     prop.value_type = crate::value::INTEGER;
     prop.value_inline[..8].copy_from_slice(&999i64.to_le_bytes());
@@ -206,7 +206,7 @@ fn property_record_roundtrip_all_fields() {
 
     let decoded = PropertyRecord::from_bytes(&buf).unwrap();
     assert_eq!(decoded.id, 42);
-    assert_eq!(decoded.key_hash, 0xABCD);
+    assert_eq!(decoded.key_id, 7);
     assert_eq!(decoded.key_offset, 500);
     assert_eq!(decoded.value_type, crate::value::INTEGER);
     assert_eq!(decoded.next_property, 200);

@@ -504,8 +504,7 @@ impl HiveDb {
         }
 
         let mut node = self.get_node(node_id)?;
-        self.register_property_key_inner(key, before_images.as_deref_mut())?;
-        let key_hash = crate::value::hash_key(key);
+        let key_id = self.register_property_key_inner(key, before_images.as_deref_mut())?;
         let (value_type, value_inline) = value.to_inline_bytes();
 
         let long_value_offset = if value_type == value::LONG_STRING {
@@ -518,14 +517,14 @@ impl HiveDb {
             0
         };
 
-        let existing = node.properties.iter_mut().find(|p| p.key_hash == key_hash);
+        let existing = node.properties.iter_mut().find(|p| p.key_id == key_id);
         if let Some(entry) = existing {
             entry.value_type = value_type;
             entry.value_inline = value_inline;
             entry.long_value_offset = long_value_offset;
         } else {
             node.properties.push(PropertyEntry {
-                key_hash,
+                key_id,
                 value_type,
                 value_inline,
                 long_value_offset,
@@ -546,12 +545,12 @@ impl HiveDb {
     /// Reads long strings from overflow pages when needed.
     pub fn get_node_property(&mut self, node_id: NodeId, key: &str) -> Result<Value, DbError> {
         let node = self.get_node(node_id)?;
-        let key_hash = crate::value::hash_key(key);
+        let key_id = self.find_property_key(key)?.ok_or(DbError::ReadError)?;
 
         let entry = node
             .properties
             .iter()
-            .find(|p| p.key_hash == key_hash)
+            .find(|p| p.key_id == key_id)
             .ok_or(DbError::ReadError)?;
 
         if entry.value_type == value::LONG_STRING && entry.long_value_offset != 0 {
@@ -602,8 +601,7 @@ impl HiveDb {
         }
 
         let mut edge = self.get_edge(edge_id)?;
-        self.register_property_key_inner(key, before_images.as_deref_mut())?;
-        let key_hash = crate::value::hash_key(key);
+        let key_id = self.register_property_key_inner(key, before_images.as_deref_mut())?;
         let (value_type, value_inline) = value.to_inline_bytes();
 
         let long_value_offset = if value_type == value::LONG_STRING {
@@ -616,14 +614,14 @@ impl HiveDb {
             0
         };
 
-        let existing = edge.properties.iter_mut().find(|p| p.key_hash == key_hash);
+        let existing = edge.properties.iter_mut().find(|p| p.key_id == key_id);
         if let Some(entry) = existing {
             entry.value_type = value_type;
             entry.value_inline = value_inline;
             entry.long_value_offset = long_value_offset;
         } else {
             edge.properties.push(PropertyEntry {
-                key_hash,
+                key_id,
                 value_type,
                 value_inline,
                 long_value_offset,
@@ -644,12 +642,12 @@ impl HiveDb {
     /// Reads long strings from overflow pages when needed.
     pub fn get_edge_property(&mut self, edge_id: EdgeId, key: &str) -> Result<Value, DbError> {
         let edge = self.get_edge(edge_id)?;
-        let key_hash = crate::value::hash_key(key);
+        let key_id = self.find_property_key(key)?.ok_or(DbError::ReadError)?;
 
         let entry = edge
             .properties
             .iter()
-            .find(|p| p.key_hash == key_hash)
+            .find(|p| p.key_id == key_id)
             .ok_or(DbError::ReadError)?;
 
         if entry.value_type == value::LONG_STRING && entry.long_value_offset != 0 {

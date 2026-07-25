@@ -28,7 +28,7 @@ pub struct EdgeRecord {
 
 pub struct PropertyRecord {
     pub id: u64,
-    pub key_hash: u64,
+    pub key_id: u32,
     pub key_offset: u64,
     pub value_type: u8,
     pub value_inline: [u8; 15],
@@ -38,7 +38,7 @@ pub struct PropertyRecord {
 }
 
 pub struct PropertyEntry {
-    pub key_hash: u64,
+    pub key_id: u32,
     pub value_type: u8,
     pub value_inline: [u8; 15],
     pub long_value_offset: u64,
@@ -105,8 +105,10 @@ impl NodeRecord {
         pos += 2;
 
         for entry in &self.properties {
-            serializer::put_u64_le(buf, pos, entry.key_hash);
-            pos += 8;
+            serializer::put_u32_le(buf, pos, entry.key_id);
+            pos += 4;
+            serializer::put_u32_le(buf, pos, 0);
+            pos += 4;
             serializer::put_u8(buf, pos, entry.value_type);
             pos += 1;
             buf[pos..pos + 15].copy_from_slice(&entry.value_inline);
@@ -147,7 +149,7 @@ impl NodeRecord {
             if pos + PROPERTY_ENTRY_BASE_SIZE > buf.len() {
                 return Err(DbError::ReadError);
             }
-            let key_hash = serializer::get_u64_le(buf, pos);
+            let key_id = serializer::get_u32_le(buf, pos);
             pos += 8;
             let value_type = serializer::get_u8(buf, pos);
             pos += 1;
@@ -164,7 +166,7 @@ impl NodeRecord {
             };
 
             properties.push(PropertyEntry {
-                key_hash,
+                key_id,
                 value_type,
                 value_inline,
                 long_value_offset,
@@ -246,8 +248,10 @@ impl EdgeRecord {
         pos += 2;
 
         for entry in &self.properties {
-            serializer::put_u64_le(buf, pos, entry.key_hash);
-            pos += 8;
+            serializer::put_u32_le(buf, pos, entry.key_id);
+            pos += 4;
+            serializer::put_u32_le(buf, pos, 0);
+            pos += 4;
             serializer::put_u8(buf, pos, entry.value_type);
             pos += 1;
             buf[pos..pos + 15].copy_from_slice(&entry.value_inline);
@@ -292,7 +296,7 @@ impl EdgeRecord {
             if pos + PROPERTY_ENTRY_BASE_SIZE > buf.len() {
                 return Err(DbError::ReadError);
             }
-            let key_hash = serializer::get_u64_le(buf, pos);
+            let key_id = serializer::get_u32_le(buf, pos);
             pos += 8;
             let value_type = serializer::get_u8(buf, pos);
             pos += 1;
@@ -309,7 +313,7 @@ impl EdgeRecord {
             };
 
             properties.push(PropertyEntry {
-                key_hash,
+                key_id,
                 value_type,
                 value_inline,
                 long_value_offset,
@@ -337,7 +341,7 @@ impl PropertyRecord {
     pub fn new(id: u64) -> Self {
         Self {
             id,
-            key_hash: NIL_ID,
+            key_id: 0,
             key_offset: NIL_ID,
             value_type: 0,
             value_inline: [0; 15],
@@ -359,7 +363,8 @@ impl PropertyRecord {
         }
         buf[0..Self::SIZE].fill(0);
         serializer::put_u64_le(buf, 0, self.id);
-        serializer::put_u64_le(buf, 8, self.key_hash);
+        serializer::put_u32_le(buf, 8, self.key_id);
+        serializer::put_u32_le(buf, 12, 0);
         serializer::put_u64_le(buf, 16, self.key_offset);
         serializer::put_u8(buf, 24, self.value_type);
         buf[25..40].copy_from_slice(&self.value_inline);
@@ -376,7 +381,7 @@ impl PropertyRecord {
         }
         Ok(Self {
             id: serializer::get_u64_le(buf, 0),
-            key_hash: serializer::get_u64_le(buf, 8),
+            key_id: serializer::get_u32_le(buf, 8),
             key_offset: serializer::get_u64_le(buf, 16),
             value_type: serializer::get_u8(buf, 24),
             value_inline: buf[25..40].try_into().unwrap(),

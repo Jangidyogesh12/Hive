@@ -106,7 +106,7 @@ Definition of done:
 - Duplicate key registration returns the existing key id.
 - Tests cover node and edge property-key registration.
 
-## [ ] Step 3: Replace Property Hash-Only Semantics With Collision-Safe Key Identity
+## [x] Step 3: Replace Property Hash-Only Semantics With Collision-Safe Key Identity
 
 Why this comes after Step 2:
 - You need real property-key IDs before making property lookup collision-safe.
@@ -118,6 +118,13 @@ What to implement:
 - Update node and edge property writes to store key identity safely.
 - Update property reads to resolve by property-key dictionary identity, not only hash.
 - Define migration policy for current files. If no compatibility is required, document that existing test DBs should be recreated.
+
+Implemented notes:
+- `PropertyEntry` now stores `key_id` instead of `key_hash`.
+- Node and edge property writes register/resolve the property key and store the resulting `key_id` on the record.
+- Node and edge property reads resolve property names through the property-key dictionary, then match entries by `key_id`.
+- The unused hash helper and hash-only record semantics were removed.
+- Existing database files using the old hash-based property entry layout should be recreated; no compatibility migration is implemented.
 
 Files to study/change:
 - `core/storage/page/record.rs`

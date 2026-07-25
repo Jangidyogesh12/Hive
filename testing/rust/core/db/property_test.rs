@@ -174,6 +174,50 @@ fn properties_persist_after_reopen() {
 }
 
 #[test]
+fn node_property_entry_stores_property_key_id() {
+    let dir = temp_dir("node_property_key_id");
+    let mut db = HiveDb::open(&dir).unwrap();
+
+    let node = db.create_node().unwrap();
+    db.set_node_property(node, "name", &Value::String("Alice".into()))
+        .unwrap();
+
+    let key_id = db.find_property_key("name").unwrap().unwrap();
+    let record = db.get_node(node).unwrap();
+    assert_eq!(record.properties[0].key_id, key_id);
+    assert_eq!(
+        db.get_node_property(node, "name").unwrap(),
+        Value::String("Alice".into())
+    );
+
+    db.close();
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn edge_property_entry_stores_property_key_id() {
+    let dir = temp_dir("edge_property_key_id");
+    let mut db = HiveDb::open(&dir).unwrap();
+
+    let src = db.create_node().unwrap();
+    let dst = db.create_node().unwrap();
+    let edge = db.create_edge(src, dst).unwrap();
+    db.set_edge_property(edge, "since", &Value::Integer(2024))
+        .unwrap();
+
+    let key_id = db.find_property_key("since").unwrap().unwrap();
+    let record = db.get_edge(edge).unwrap();
+    assert_eq!(record.properties[0].key_id, key_id);
+    assert_eq!(
+        db.get_edge_property(edge, "since").unwrap(),
+        Value::Integer(2024)
+    );
+
+    db.close();
+    cleanup_dir(&dir);
+}
+
+#[test]
 fn register_and_get_property_key() {
     let dir = temp_dir("property_key_register");
     let mut db = HiveDb::open(&dir).unwrap();
