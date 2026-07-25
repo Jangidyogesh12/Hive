@@ -11,12 +11,16 @@ use crate::transaction::Transaction;
 use crate::types::{EdgeId, NodeId};
 use crate::value::Value;
 
+/// A reference to a database entity (node or edge) bound to a query variable.
 #[derive(Debug, Clone, PartialEq)]
 enum EntityRef {
+    /// A node reference, identified by its packed `NodeId`.
     Node(NodeId),
+    /// An edge reference, identified by its packed `EdgeId`.
     Edge(EdgeId),
 }
 
+/// A single row of variable bindings produced during query execution.
 type Row = HashMap<String, EntityRef>;
 
 pub fn execute(plan: &QueryPlan, db: &mut HiveDb) -> Result<QueryResult, DbError> {
@@ -107,6 +111,7 @@ fn execute_in_tx(plan: &QueryPlan, tx: &mut Transaction<'_>) -> Result<QueryResu
     Ok(result)
 }
 
+/// Creates one new node per row, optionally assigning properties and binding to a variable.
 fn create_nodes(
     rows: Vec<Row>,
     variable: &Option<String>,
@@ -129,6 +134,7 @@ fn create_nodes(
     Ok(out)
 }
 
+/// Creates a directed edge between two nodes per row, resolving or creating the src/dst as needed.
 fn create_relationships(
     rows: Vec<Row>,
     src: &NodePattern,
@@ -154,6 +160,7 @@ fn create_relationships(
     Ok(out)
 }
 
+/// Returns the existing node ID for a variable if bound, or creates a new node and binds it.
 fn get_or_create_node(
     row: &mut Row,
     pattern: &NodePattern,
@@ -176,6 +183,7 @@ fn get_or_create_node(
     Ok(node_id)
 }
 
+/// Merges nodes: reuses an existing node matching the label and properties, or creates a new one.
 fn merge_nodes(
     rows: Vec<Row>,
     variable: &Option<String>,
@@ -205,6 +213,7 @@ fn merge_nodes(
     Ok(out)
 }
 
+/// Scans all nodes (optionally filtered by label and predicate) and binds them to a variable.
 fn scan_nodes(
     rows: Vec<Row>,
     variable: &str,
@@ -239,6 +248,7 @@ fn scan_nodes(
     Ok(out)
 }
 
+/// Traverses edges from each bound node, optionally filtered by type and direction.
 #[allow(clippy::too_many_arguments)]
 fn traverse_edges(
     rows: Vec<Row>,
@@ -313,6 +323,7 @@ fn traverse_edges(
     Ok(out)
 }
 
+/// Filters rows to only those where the condition evaluates to `true`.
 fn filter_rows(
     rows: Vec<Row>,
     condition: &Expression,
@@ -327,6 +338,7 @@ fn filter_rows(
         .collect()
 }
 
+/// Sets a property on each bound entity (node or edge) in the given variable across all rows.
 fn set_properties(
     rows: &[Row],
     variable: &str,
@@ -350,6 +362,7 @@ fn set_properties(
     Ok(())
 }
 
+/// Deletes the specified variables from all rows.  If `detach` is true, incident edges are also deleted.
 fn delete_entities(
     rows: &[Row],
     variables: &[String],
@@ -394,6 +407,7 @@ fn delete_entities(
     Ok(())
 }
 
+/// Projects the final result set from the accumulated rows according to the RETURN clause.
 fn project_return(
     rows: &[Row],
     clause: &ReturnClause,
@@ -450,6 +464,7 @@ fn project_return(
     Ok(QueryResult::new(columns, rows))
 }
 
+/// Finds the first node matching the given label and property constraints.
 fn find_matching_node(
     label_id: u32,
     properties: &HashMap<String, Expression>,
@@ -478,10 +493,12 @@ fn find_matching_node(
     Ok(None)
 }
 
+/// Evaluates an expression and returns `true` only if it produces `Value::Boolean(true)`.
 fn eval_truthy(expr: &Expression, row: &Row, tx: &mut Transaction<'_>) -> Result<bool, DbError> {
     Ok(matches!(eval_expr(expr, row, tx)?, Value::Boolean(true)))
 }
 
+/// Evaluates an expression against the current row bindings and returns a `Value`.
 fn eval_expr(expr: &Expression, row: &Row, tx: &mut Transaction<'_>) -> Result<Value, DbError> {
     match expr {
         Expression::Integer(n) => Ok(Value::Integer(*n)),
@@ -489,8 +506,8 @@ fn eval_expr(expr: &Expression, row: &Row, tx: &mut Transaction<'_>) -> Result<V
         Expression::String(s) => Ok(Value::String(s.clone())),
         Expression::Boolean(b) => Ok(Value::Boolean(*b)),
         Expression::Variable(variable) => match row.get(variable) {
-            Some(EntityRef::Node(node_id)) => Ok(Value::Integer(*node_id as i64)),
-            Some(EntityRef::Edge(edge_id)) => Ok(Value::Integer(*edge_id as i64)),
+            Some(EntityRef::Node(node_id)) => entity_to_map_for_node(tx, *node_id),
+            Some(EntityRef::Edge(edge_id)) => entity_to_map_for_edge(tx, *edge_id),
             None => Ok(Value::Null),
         },
         Expression::Property { variable, property } => match row.get(variable) {
@@ -512,6 +529,7 @@ fn eval_expr(expr: &Expression, row: &Row, tx: &mut Transaction<'_>) -> Result<V
     }
 }
 
+/// Evaluates a binary operation on two values and returns the result.
 fn eval_binary(left: Value, op: &BinaryOp, right: Value) -> Result<Value, DbError> {
     match op {
         BinaryOp::Eq => Ok(Value::Boolean(left == right)),
@@ -539,6 +557,7 @@ fn eval_binary(left: Value, op: &BinaryOp, right: Value) -> Result<Value, DbErro
     }
 }
 
+/// Compares two values and returns their ordering.  Supports cross-type numeric comparison.
 fn compare_values(left: &Value, right: &Value) -> Ordering {
     match (left, right) {
         (Value::Integer(a), Value::Integer(b)) => a.cmp(b),
@@ -558,6 +577,51 @@ fn compare_values(left: &Value, right: &Value) -> Ordering {
     }
 }
 
+/// Converts a node into a `Value::Map` with keys `id`, `label`, and `properties`.
+fn entity_to_map_for_node(tx: &mut Transaction<'_>, node_id: NodeId) -> Result<Value, DbError> {
+    let node = tx.get_node(node_id)?;
+    let label_name = if node.label_id != 0 {
+        tx.get_label_name(node.label_id)?
+            .unwrap_or_else(|| format!("label_{}", node.label_id))
+    } else {
+        String::new()
+    };
+    let props = tx.list_node_properties(node_id)?;
+    let mut map = HashMap::new();
+    map.insert("id".to_string(), Value::Integer(node.id as i64));
+    map.insert("label".to_string(), Value::String(label_name));
+    let mut props_map = HashMap::new();
+    for (k, v) in props {
+        props_map.insert(k, v);
+    }
+    map.insert("properties".to_string(), Value::Map(props_map));
+    Ok(Value::Map(map))
+}
+
+/// Converts an edge into a `Value::Map` with keys `id`, `type`, `src`, `dst`, and `properties`.
+fn entity_to_map_for_edge(tx: &mut Transaction<'_>, edge_id: EdgeId) -> Result<Value, DbError> {
+    let edge = tx.get_edge(edge_id)?;
+    let type_name = if edge.label_id != 0 {
+        tx.get_label_name(edge.label_id)?
+            .unwrap_or_else(|| format!("type_{}", edge.label_id))
+    } else {
+        String::new()
+    };
+    let props = tx.list_edge_properties(edge_id)?;
+    let mut map = HashMap::new();
+    map.insert("id".to_string(), Value::Integer(edge.id as i64));
+    map.insert("type".to_string(), Value::String(type_name));
+    map.insert("src".to_string(), Value::Integer(edge.src as i64));
+    map.insert("dst".to_string(), Value::Integer(edge.dst as i64));
+    let mut props_map = HashMap::new();
+    for (k, v) in props {
+        props_map.insert(k, v);
+    }
+    map.insert("properties".to_string(), Value::Map(props_map));
+    Ok(Value::Map(map))
+}
+
+/// Reads a node property by key name, returning `Value::Null` if the property does not exist.
 fn node_property_value(
     tx: &mut Transaction<'_>,
     node_id: NodeId,
@@ -570,6 +634,7 @@ fn node_property_value(
     }
 }
 
+/// Reads an edge property by key name, returning `Value::Null` if the property does not exist.
 fn edge_property_value(
     tx: &mut Transaction<'_>,
     edge_id: EdgeId,
@@ -582,12 +647,15 @@ fn edge_property_value(
     }
 }
 
+/// Returns `true` if the row's variable is either unbound or already matches the candidate.
 fn binding_matches(row: &Row, variable: &str, candidate: &EntityRef) -> Result<bool, DbError> {
     Ok(row
         .get(variable)
         .is_none_or(|existing| existing == candidate))
 }
 
+/// Resolves the label name to a `label_id`, registering it if necessary.
+/// Returns 0 for `None` (unlabeled).
 fn label_id_for(tx: &mut Transaction<'_>, label: Option<&str>) -> Result<u32, DbError> {
     match label {
         Some(label) => tx.register_label(label),
@@ -595,6 +663,7 @@ fn label_id_for(tx: &mut Transaction<'_>, label: Option<&str>) -> Result<u32, Db
     }
 }
 
+/// Generates a default column name from an expression.
 fn expression_name(expr: &Expression) -> String {
     match expr {
         Expression::Variable(variable) => variable.clone(),
@@ -603,6 +672,7 @@ fn expression_name(expr: &Expression) -> String {
     }
 }
 
+/// Decodes a `Value` from a `PropertyEntry`'s inline bytes (unused, kept for potential future use).
 #[allow(dead_code)]
 fn inline_property_value(entry: &PropertyEntry) -> Value {
     Value::from_bytes(entry.value_type, entry.value_inline)

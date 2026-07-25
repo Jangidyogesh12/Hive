@@ -71,7 +71,7 @@ fn node_record_with_multiple_property_types_roundtrip() {
     let mut node = NodeRecord::new(50);
     node.properties.push(make_property(1, &Value::Null));
     node.properties.push(make_property(2, &Value::Integer(999)));
-    node.properties.push(make_property(3, &Value::Float(3.14)));
+    node.properties.push(make_property(3, &Value::Float(3.15)));
     node.properties
         .push(make_property(4, &Value::Boolean(true)));
     node.properties

@@ -4,6 +4,11 @@ use crate::types::{EdgeId, NodeId};
 use crate::value::Value;
 use crate::wal::wal_entry::TxId;
 
+/// A serializable transaction that tracks page before-images for rollback.
+///
+/// Created via `HiveDb::begin()`.  All mutations through this transaction
+/// record their before-images so the entire transaction can be rolled back
+/// on error.  Call `commit` to durably write changes or `rollback` to revert.
 pub struct Transaction<'a> {
     db: &'a mut HiveDb,
     tx_id: TxId,
@@ -11,6 +16,7 @@ pub struct Transaction<'a> {
 }
 
 impl<'a> Transaction<'a> {
+    /// Creates a new transaction bound to the given database instance.
     pub(crate) fn new(db: &'a mut HiveDb, tx_id: TxId) -> Result<Self, DbError> {
         Ok(Self {
             db,
@@ -77,46 +83,55 @@ impl<'a> Transaction<'a> {
             .set_edge_property_inner(edge_id, key, value, Some(&mut self.before_images))
     }
 
+    /// Deletes an edge as part of this transaction.
     pub fn delete_edge(&mut self, edge_id: EdgeId) -> Result<(), DbError> {
         self.db
             .delete_edge_inner(edge_id, Some(&mut self.before_images))
     }
 
+    /// Deletes a node as part of this transaction.  Fails if the node has incident edges.
     pub fn delete_node(&mut self, node_id: NodeId) -> Result<(), DbError> {
         self.db
             .delete_node_inner(node_id, Some(&mut self.before_images))
     }
 
+    /// Scans all live node records in the database.
     pub fn scan_nodes(
         &mut self,
     ) -> Result<Vec<(NodeId, crate::storage::page::record::NodeRecord)>, DbError> {
         self.db.scan_nodes()
     }
 
+    /// Scans all live edge records in the database.
     pub fn scan_edges(
         &mut self,
     ) -> Result<Vec<(EdgeId, crate::storage::page::record::EdgeRecord)>, DbError> {
         self.db.scan_edges()
     }
 
+    /// Registers a label name and returns its numeric ID.  Deduplicates automatically.
     pub fn register_label(&mut self, name: &str) -> Result<u32, DbError> {
         self.db
             .register_label_inner(name, Some(&mut self.before_images))
     }
 
+    /// Returns the label name for a given label ID, or `None` if not found.
     pub fn get_label_name(&mut self, label_id: u32) -> Result<Option<String>, DbError> {
         self.db.get_label_name(label_id)
     }
 
+    /// Registers a property-key name and returns its numeric ID.  Deduplicates automatically.
     pub fn register_property_key(&mut self, name: &str) -> Result<u32, DbError> {
         self.db
             .register_property_key_inner(name, Some(&mut self.before_images))
     }
 
+    /// Returns the property-key name for a given `key_id`, or `None` if not found.
     pub fn get_property_key_name(&mut self, key_id: u32) -> Result<Option<String>, DbError> {
         self.db.get_property_key_name(key_id)
     }
 
+    /// Looks up the `key_id` for a given property name, or returns `None` if not found.
     pub fn find_property_key(&mut self, name: &str) -> Result<Option<u32>, DbError> {
         self.db.find_property_key(name)
     }
@@ -145,6 +160,22 @@ impl<'a> Transaction<'a> {
     /// Reads an edge property inside this transaction.
     pub fn get_edge_property(&mut self, edge_id: EdgeId, key: &str) -> Result<Value, DbError> {
         self.db.get_edge_property(edge_id, key)
+    }
+
+    /// Lists all properties on a node as (key_name, value) pairs.
+    pub fn list_node_properties(
+        &mut self,
+        node_id: NodeId,
+    ) -> Result<Vec<(String, Value)>, DbError> {
+        self.db.list_node_properties(node_id)
+    }
+
+    /// Lists all properties on an edge as (key_name, value) pairs.
+    pub fn list_edge_properties(
+        &mut self,
+        edge_id: EdgeId,
+    ) -> Result<Vec<(String, Value)>, DbError> {
+        self.db.list_edge_properties(edge_id)
     }
 
     /// Commits the transaction by writing dirty page images to the WAL,

@@ -1,5 +1,8 @@
 //! Value representation for Hive properties and query results.
 
+use std::collections::HashMap;
+use std::fmt;
+
 pub const NULL: u8 = 0;
 pub const INTEGER: u8 = 1;
 pub const FLOAT: u8 = 2;
@@ -20,11 +23,48 @@ pub enum Value {
     Boolean(bool),
     /// UTF-8 string value.
     String(String),
+    /// Ordered map of named values, used for entity returns.
+    Map(HashMap<String, Value>),
+    /// Ordered list of values, used for list expressions and multi-entity returns.
+    List(Vec<Value>),
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Null => write!(f, "NULL"),
+            Value::Integer(n) => write!(f, "{}", n),
+            Value::Float(v) => write!(f, "{}", v),
+            Value::Boolean(b) => write!(f, "{}", b),
+            Value::String(s) => write!(f, "{}", s),
+            Value::Map(map) => {
+                write!(f, "{{")?;
+                for (i, (k, v)) in map.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", k, v)?;
+                }
+                write!(f, "}}")
+            }
+            Value::List(list) => {
+                write!(f, "[")?;
+                for (i, v) in list.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", v)?;
+                }
+                write!(f, "]")
+            }
+        }
+    }
 }
 
 impl Value {
     /// Encodes the value into a type tag and a 15-byte inline buffer.
     /// Long strings set `LONG_STRING` type and store the offset separately.
+    /// Map and List are query-result-only values and cannot be stored inline.
     pub fn to_inline_bytes(&self) -> (u8, [u8; 15]) {
         match self {
             Value::Null => (NULL, [0u8; 15]),
@@ -33,9 +73,9 @@ impl Value {
                 buf[..8].copy_from_slice(&n.to_le_bytes());
                 (INTEGER, buf)
             }
-            Value::Float(f) => {
+            Value::Float(v) => {
                 let mut buf = [0u8; 15];
-                buf[..8].copy_from_slice(&f.to_le_bytes());
+                buf[..8].copy_from_slice(&v.to_le_bytes());
                 (FLOAT, buf)
             }
             Value::Boolean(b) => {
@@ -53,6 +93,7 @@ impl Value {
                     (LONG_STRING, [0u8; 15])
                 }
             }
+            Value::Map(_) | Value::List(_) => (NULL, [0u8; 15]),
         }
     }
 

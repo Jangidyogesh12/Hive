@@ -152,7 +152,7 @@ Definition of done:
 - Tests prove two distinct property names cannot incorrectly read the same value due to hash-only lookup.
 - Existing property read/write tests pass.
 
-## [ ] Step 4: Add Property Name Introspection And Whole-Entity Return Support
+## [x] Step 4: Add Property Name Introspection And Whole-Entity Return Support
 
 Why this comes after Step 3:
 - Introspection needs property-key names to reconstruct entity property maps.
@@ -186,6 +186,14 @@ Definition of done:
 - `MATCH (n:Person) RETURN n` returns inspectable node data.
 - Entity return includes ID, label/type, and named properties.
 - Tests cover node and edge entity returns.
+
+Implemented notes:
+- Added `Value::Map(HashMap<String, Value>)` and `Value::List(Vec<Value>)` variants.
+- Added `Display` implementation for all `Value` variants including Map and List.
+- Added `HiveDb::list_node_properties(node_id)` and `HiveDb::list_edge_properties(edge_id)` that resolve `key_id` to key names via the property-key dictionary.
+- Updated `Transaction` to expose `list_node_properties` and `list_edge_properties`.
+- Updated executor so `RETURN n` produces a `Value::Map` with `id`, `label`, and `properties` fields.
+- Updated executor so `RETURN r` produces a `Value::Map` with `id`, `type`, `src`, `dst`, and `properties` fields.
 
 ## [ ] Step 5: Harden Query Transaction Semantics
 

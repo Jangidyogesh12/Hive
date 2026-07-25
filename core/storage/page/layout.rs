@@ -1,9 +1,9 @@
-use super::format::{META_HEADER_SIZE, PAGE_SIZE, REGULAR_HEADER_SIZE, SLOT_ENTRY_SIZE};
 /// Page layout operations: init, insert, read, delete, compact.
 ///
 /// All functions operate on a raw `&mut [u8; PAGE_SIZE]` buffer. The caller
 /// (pager) owns the buffer. These functions are pure byte manipulation — no
 /// file I/O, no allocation, no caching.
+use super::format::{META_HEADER_SIZE, PAGE_SIZE, REGULAR_HEADER_SIZE, SLOT_ENTRY_SIZE};
 use super::format::{MetaHeader, PageHeader, PageType, SlotEntry};
 use super::record::SlotIndex;
 use super::serializer;

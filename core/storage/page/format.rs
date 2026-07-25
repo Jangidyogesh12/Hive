@@ -14,18 +14,29 @@ pub fn is_meta_page(buf: &[u8; PAGE_SIZE]) -> bool {
     buf[..16] == HIVE_MAGIC
 }
 
+/// Database page type tag stored in the first byte of every page header.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageType {
+    /// Database meta header (page 0 only).
     Meta = 0x00,
+    /// Page containing node records.
     DataNode = 0x01,
+    /// Page containing edge records.
     DataEdge = 0x02,
+    /// Legacy string data page (unused, kept for format compatibility).
     StringData = 0x04,
+    /// Page containing label dictionary entries.
     LabelData = 0x05,
+    /// Page containing property-key dictionary entries.
     PropertyKeyData = 0x06,
+    /// B-tree interior index page (reserved for future use).
     IndexInterior = 0x0A,
+    /// B-tree leaf index page (reserved for future use).
     IndexLeaf = 0x0B,
+    /// Free page list tracking reusable pages.
     Freelist = 0x0F,
+    /// Overflow page for long string storage.
     Overflow = 0x10,
 }
 
@@ -48,14 +59,25 @@ impl PageType {
     }
 }
 
+/// On-disk page header stored at the beginning of every non-meta page.
+///
+/// Followed by a slot table growing downward and a record area growing upward.
 pub struct PageHeader {
+    /// Page type tag (see `PageType`).
     pub page_type: PageType,
+    /// Feature flags: bit 0 = has overflow, bit 1 = compressed.
     pub free_flags: u8,
+    /// Number of slot entries currently in the slot table.
     pub slot_count: u16,
+    /// Byte offset where the next record can be written (grows downward).
     pub free_space_offset: u16,
+    /// Byte offset of the first entry in the freeblock chain, or 0 if none.
     pub first_freeblock: u16,
+    /// CRC32 checksum of the page bytes starting at `CHECKSUM_START`.
     pub checksum: u32,
+    /// Highest LSN written to this page (used by WAL recovery).
     pub lsn: u32,
+    /// Reserved field for future use.
     pub reserved: u32,
 }
 
@@ -107,22 +129,42 @@ impl PageHeader {
     }
 }
 
+/// Database-wide metadata header stored on page 0.
+///
+/// Contains magic bytes, version, page size, record counters, root page
+/// pointers, and WAL recovery state.  All fields are little-endian.
 pub struct MetaHeader {
+    /// Magic bytes identifying a Hive database file.
     pub magic: [u8; 16],
+    /// On-disk format version.
     pub version: u32,
+    /// Page size in bytes (always 4096).
     pub page_size: u32,
+    /// Total number of pages in the database file.
     pub db_size_pages: u32,
+    /// Monotonically increasing counter of created nodes.
     pub node_count: u64,
+    /// Monotonically increasing counter of created edges.
     pub edge_count: u64,
+    /// Monotonically increasing counter of property keys.
     pub property_count: u64,
+    /// Monotonically increasing counter of labels.
     pub label_count: u64,
+    /// Page ID of the root node page, or 0 if none.
     pub root_node_page: u32,
+    /// Page ID of the root edge page, or 0 if none.
     pub root_edge_page: u32,
+    /// Page ID of the root label dictionary page, or 0 if none.
     pub root_label_page: u32,
+    /// Page ID of the root property-key dictionary page, or 0 if none.
     pub root_string_page: u32,
+    /// Page ID of the freelist head, or 0 if none.
     pub freelist_head: u32,
+    /// User-facing schema version number.
     pub schema_version: u32,
+    /// CRC32 checksum of the meta page bytes.
     pub checksum: u32,
+    /// Highest LSN written to this page (used by WAL recovery).
     pub lsn: u32,
 }
 
@@ -201,8 +243,11 @@ impl Default for MetaHeader {
     }
 }
 
+/// A 4-byte slot-table entry mapping a slot index to a record's offset and length within the page.
 pub struct SlotEntry {
+    /// Byte offset of the record payload within the page content area.
     pub offset: u16,
+    /// Byte length of the record payload.
     pub length: u16,
 }
 

@@ -176,10 +176,12 @@ impl HiveDb {
         Ok(key_id)
     }
 
+    /// Returns the property-key name for a given `key_id`, or `None` if not found.
     pub fn get_property_key_name(&mut self, key_id: u32) -> Result<Option<String>, DbError> {
         PropertyKeyStore::get_property_key_name(&mut self.pager, key_id)
     }
 
+    /// Looks up the `key_id` for a given property name, or returns `None` if not found.
     pub fn find_property_key(&mut self, name: &str) -> Result<Option<u32>, DbError> {
         PropertyKeyStore::find_property_key(&mut self.pager, name)
     }
@@ -389,6 +391,7 @@ impl HiveDb {
         Ok(out)
     }
 
+    /// Returns `true` if any edge in the database references the given node as src or dst.
     pub fn node_has_edges(&mut self, node_id: NodeId) -> Result<bool, DbError> {
         Ok(self
             .scan_edges()?
@@ -396,6 +399,7 @@ impl HiveDb {
             .any(|(_, edge)| edge.src == node_id || edge.dst == node_id))
     }
 
+    /// Deletes an edge by its packed EdgeId.  Wraps in an auto-committed transaction.
     pub fn delete_edge(&mut self, edge_id: EdgeId) -> Result<(), DbError> {
         let tx_id = self.next_tx_id();
         let mut before_images = Vec::new();
@@ -414,6 +418,7 @@ impl HiveDb {
         }
     }
 
+    /// Inner implementation of edge deletion.  Optionally captures before-images for rollback.
     pub(crate) fn delete_edge_inner(
         &mut self,
         edge_id: EdgeId,
@@ -428,6 +433,7 @@ impl HiveDb {
         layout::delete_record(page_buf, slot_id)
     }
 
+    /// Deletes a node by its packed NodeId.  Fails if the node has incident edges.
     pub fn delete_node(&mut self, node_id: NodeId) -> Result<(), DbError> {
         let tx_id = self.next_tx_id();
         let mut before_images = Vec::new();
@@ -446,6 +452,7 @@ impl HiveDb {
         }
     }
 
+    /// Inner implementation of node deletion.  Optionally captures before-images for rollback.
     pub(crate) fn delete_node_inner(
         &mut self,
         node_id: NodeId,
@@ -659,6 +666,58 @@ impl HiveDb {
         Ok(Value::from_bytes(entry.value_type, entry.value_inline))
     }
 
+    /// Lists all properties on a node as (key_name, value) pairs.
+    pub fn list_node_properties(
+        &mut self,
+        node_id: NodeId,
+    ) -> Result<Vec<(String, Value)>, DbError> {
+        let node = self.get_node(node_id)?;
+        let mut out = Vec::with_capacity(node.properties.len());
+        for entry in &node.properties {
+            let key_name = self
+                .get_property_key_name(entry.key_id)?
+                .unwrap_or_else(|| format!("key_{}", entry.key_id));
+            if entry.value_type == value::LONG_STRING && entry.long_value_offset != 0 {
+                let data =
+                    OverflowStore::read_string(&mut self.pager, entry.long_value_offset as u32)?;
+                let s = String::from_utf8(data).map_err(|_| DbError::ReadError)?;
+                out.push((key_name, Value::String(s)));
+            } else {
+                out.push((
+                    key_name,
+                    Value::from_bytes(entry.value_type, entry.value_inline),
+                ));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Lists all properties on an edge as (key_name, value) pairs.
+    pub fn list_edge_properties(
+        &mut self,
+        edge_id: EdgeId,
+    ) -> Result<Vec<(String, Value)>, DbError> {
+        let edge = self.get_edge(edge_id)?;
+        let mut out = Vec::with_capacity(edge.properties.len());
+        for entry in &edge.properties {
+            let key_name = self
+                .get_property_key_name(entry.key_id)?
+                .unwrap_or_else(|| format!("key_{}", entry.key_id));
+            if entry.value_type == value::LONG_STRING && entry.long_value_offset != 0 {
+                let data =
+                    OverflowStore::read_string(&mut self.pager, entry.long_value_offset as u32)?;
+                let s = String::from_utf8(data).map_err(|_| DbError::ReadError)?;
+                out.push((key_name, Value::String(s)));
+            } else {
+                out.push((
+                    key_name,
+                    Value::from_bytes(entry.value_type, entry.value_inline),
+                ));
+            }
+        }
+        Ok(out)
+    }
+
     /// Finds an existing DataEdge page with free space, or allocates a new one.
     fn find_or_alloc_page(
         &mut self,
@@ -769,6 +828,7 @@ impl HiveDb {
         self.next_tx_id.fetch_add(1, Ordering::SeqCst)
     }
 
+    /// Captures the current page image for rollback before modifying it.
     fn capture_before_image(
         pager: &mut Pager,
         before_images: &mut Option<&mut Vec<BeforeImage>>,
@@ -777,6 +837,7 @@ impl HiveDb {
         Self::capture_page_image(pager, before_images, page_id, false)
     }
 
+    /// Writes a long string to an overflow page and returns the page ID.
     fn write_overflow_string(
         &mut self,
         data: &[u8],
@@ -788,6 +849,7 @@ impl HiveDb {
         Ok(page_id)
     }
 
+    /// Captures a newly allocated page so it can be freed on rollback.
     fn capture_allocated_page(
         pager: &mut Pager,
         before_images: &mut Option<&mut Vec<BeforeImage>>,
@@ -796,6 +858,7 @@ impl HiveDb {
         Self::capture_page_image(pager, before_images, page_id, true)
     }
 
+    /// Core before-image capture: copies the current page bytes if not already captured.
     fn capture_page_image(
         pager: &mut Pager,
         before_images: &mut Option<&mut Vec<BeforeImage>>,
@@ -819,6 +882,8 @@ impl HiveDb {
         Ok(())
     }
 
+    /// Restores all pages to their state before the transaction began.
+    /// Newly allocated pages are freed; existing pages are overwritten.
     pub(crate) fn rollback_pages(&mut self, before_images: &[BeforeImage]) -> Result<(), DbError> {
         for image in before_images.iter().rev() {
             self.pager.restore_page(image.page_id, &image.bytes)?;
@@ -900,6 +965,7 @@ impl HiveDb {
         Ok(())
     }
 
+    /// Closes the database, flushing all pending writes to disk.
     pub fn close(mut self) {
         let _ = self.pager.sync_all();
     }

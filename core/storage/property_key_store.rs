@@ -8,11 +8,18 @@ use crate::storage::page::format::PageHeader;
 use crate::storage::page::layout;
 use crate::storage::pager::Pager;
 
-pub(crate) const PROPERTY_KEY_ENTRY_HEADER_SIZE: usize = 6; // key_id (4) + name_len (2)
+/// Size of the fixed header before the name bytes in a property-key entry: `[key_id: u32][name_len: u16]`.
+pub(crate) const PROPERTY_KEY_ENTRY_HEADER_SIZE: usize = 6;
 
+/// In-memory handle for the property-key dictionary stored in `PropertyKeyData` pages.
+///
+/// The dictionary maps `key_id <-> name` and lives in the root page pointed to
+/// by `MetaHeader.root_string_page`.  Every property entry on a node or edge
+/// stores a `key_id` that references this dictionary.
 pub struct PropertyKeyStore;
 
 impl PropertyKeyStore {
+    /// Encodes a single property-key dictionary entry as `[key_id: u32][name_len: u16][name: bytes]`.
     pub(crate) fn encode_property_key_entry(key_id: u32, name: &str) -> Result<Vec<u8>, DbError> {
         let name_bytes = name.as_bytes();
         if name_bytes.len() > u16::MAX as usize {
@@ -27,6 +34,7 @@ impl PropertyKeyStore {
         Ok(entry_buf)
     }
 
+    /// Looks up the `key_id` for the given property name, or returns `None` if not found.
     pub fn find_property_key(pager: &mut Pager, name: &str) -> Result<Option<u32>, DbError> {
         let root_page = {
             let meta_page = pager.get_page(META_PAGE_ID)?;
@@ -62,6 +70,7 @@ impl PropertyKeyStore {
         Ok(None)
     }
 
+    /// Returns the property name for the given `key_id`, or `None` if the key is unknown.
     pub fn get_property_key_name(
         pager: &mut Pager,
         key_id: u32,

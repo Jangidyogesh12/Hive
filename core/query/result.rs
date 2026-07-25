@@ -20,13 +20,7 @@ impl QueryResult {
 
     /// Converts a Hive value to the display form used by table rendering.
     pub fn value_to_string(v: &Value) -> String {
-        match v {
-            Value::Null => "NULL".to_string(),
-            Value::Integer(n) => n.to_string(),
-            Value::Float(f) => f.to_string(),
-            Value::Boolean(b) => b.to_string(),
-            Value::String(s) => s.clone(),
-        }
+        v.to_string()
     }
 
     /// Renders the result as an ASCII table with a header row.

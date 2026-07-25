@@ -4,48 +4,102 @@ use crate::errors::DbError;
 use crate::types::NIL_ID;
 use crate::value;
 
+/// On-disk representation of a single node stored in a slotted page.
+///
+/// Serialized layout (fixed prefix):
+/// `[flags: u8][label_id: u32][id: u64][first_out_edge: u64][first_in_edge: u64][first_property: u64]`
+///
+/// Followed by a `[prop_count: u16]` and then `prop_count` inline property entries.
 pub struct NodeRecord {
+    /// Logical node ID (monotonically increasing, assigned at creation).
     pub id: u64,
+    /// ID of the label associated with this node (0 = unlabeled).
     pub label_id: u32,
+    /// Reserved flags for future use.
     pub flags: u32,
+    /// Packed record ID of the first outgoing edge, or `NIL_ID` if none.
     pub first_out_edge: u64,
+    /// Packed record ID of the first incoming edge, or `NIL_ID` if none.
     pub first_in_edge: u64,
+    /// Reserved for future linked-list property storage (currently unused).
     pub first_property: u64,
+    /// Inline property entries stored directly in the node record.
     pub properties: Vec<PropertyEntry>,
 }
 
+/// On-disk representation of a single directed edge stored in a slotted page.
+///
+/// Serialized layout (fixed prefix):
+/// `[flags: u8][label_id: u32][id: u64][src: u64][dst: u64][next_out_edge: u64][next_in_edge: u64][first_property: u64]`
+///
+/// Followed by a `[prop_count: u16]` and then `prop_count` inline property entries.
 pub struct EdgeRecord {
+    /// Logical edge ID (monotonically increasing, assigned at creation).
     pub id: u64,
+    /// ID of the label/type associated with this edge (0 = unlabeled).
     pub label_id: u32,
+    /// Reserved flags for future use.
     pub flags: u32,
+    /// Packed record ID of the source node.
     pub src: u64,
+    /// Packed record ID of the destination node.
     pub dst: u64,
+    /// Packed record ID of the next outgoing edge from `src`, or `NIL_ID` if none.
     pub next_out_edge: u64,
+    /// Packed record ID of the next incoming edge to `dst`, or `NIL_ID` if none.
     pub next_in_edge: u64,
+    /// Reserved for future linked-list property storage (currently unused).
     pub first_property: u64,
+    /// Inline property entries stored directly in the edge record.
     pub properties: Vec<PropertyEntry>,
 }
 
+/// Fixed-size on-disk record for a single property value (reserved for future use).
+///
+/// This record type is defined for potential future external property storage
+/// where properties are moved out of node/edge records into separate pages.
+/// Currently unused — properties are stored inline via `PropertyEntry`.
 pub struct PropertyRecord {
+    /// Logical property ID.
     pub id: u64,
+    /// ID of the property key in the property-key dictionary.
     pub key_id: u32,
+    /// Byte offset to the key name in the dictionary page, or `NIL_ID` if unused.
     pub key_offset: u64,
+    /// Type tag identifying the value encoding (see `value` module constants).
     pub value_type: u8,
+    /// Inline value bytes (up to 15 bytes stored directly).
     pub value_inline: [u8; 15],
+    /// Packed record ID of the next property in the chain, or `NIL_ID` if none.
     pub next_property: u64,
+    /// Reserved flags for future use.
     pub flags: u32,
+    /// Reserved field for future use.
     pub reserved: u32,
 }
 
+/// Compact property entry stored inline within a node or edge record.
+///
+/// Each entry stores a `key_id` referencing the property-key dictionary,
+/// a type tag, up to 15 inline value bytes, and an overflow pointer for
+/// long strings.  Multiple entries are serialized sequentially after the
+/// node/edge fixed prefix.
 pub struct PropertyEntry {
+    /// ID of the property key in the property-key dictionary.
     pub key_id: u32,
+    /// Type tag identifying the value encoding (see `value` module constants).
     pub value_type: u8,
+    /// Inline value bytes (up to 15 bytes stored directly).
     pub value_inline: [u8; 15],
+    /// Page offset to overflow data for long strings, or 0 if unused.
     pub long_value_offset: u64,
 }
 
+/// Fixed prefix size of a serialized node record (excluding properties): 1 + 4 + 8 + 8 + 8 + 8.
 const NODE_FIXED_PREFIX: usize = 39;
+/// Fixed prefix size of a serialized edge record (excluding properties): 1 + 4 + 8 + 8 + 8 + 8 + 8 + 8.
 const EDGE_FIXED_PREFIX: usize = 63;
+/// Base size of a serialized property entry (key_id + reserved + value_type + value_inline).
 const PROPERTY_ENTRY_BASE_SIZE: usize = 25;
 
 impl NodeRecord {
