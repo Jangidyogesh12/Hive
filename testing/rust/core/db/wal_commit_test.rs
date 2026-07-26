@@ -383,6 +383,129 @@ fn rollback_reuses_newly_allocated_overflow_page() {
 }
 
 #[test]
+fn committed_delete_survives_crash_recovery() {
+    let dir = temp_dir("crash_recovery_delete");
+
+    let id1;
+    let id2;
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        id1 = db.create_node().unwrap();
+        id2 = db.create_node().unwrap();
+        db.delete_node(id2).unwrap();
+        drop(db);
+    }
+
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        let nodes = db.scan_nodes().unwrap();
+        assert_eq!(nodes.len(), 1, "committed delete should survive recovery");
+        assert!(db.get_node(id2).is_err());
+        let node = db.get_node(id1).unwrap();
+        assert_eq!(node.id, 1);
+        db.close();
+    }
+
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn uncommitted_delete_discarded_on_recovery() {
+    let dir = temp_dir("crash_recovery_uncommitted_delete");
+
+    let id1;
+    let id2;
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        id1 = db.create_node().unwrap();
+        id2 = db.create_node().unwrap();
+
+        {
+            let mut tx = db.begin().unwrap();
+            tx.delete_node(id2).unwrap();
+            tx.rollback().unwrap();
+        }
+
+        drop(db);
+    }
+
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        let nodes = db.scan_nodes().unwrap();
+        assert_eq!(
+            nodes.len(),
+            2,
+            "uncommitted delete should be discarded on recovery"
+        );
+        let node1 = db.get_node(id1).unwrap();
+        assert_eq!(node1.id, 1);
+        let node2 = db.get_node(id2).unwrap();
+        assert_eq!(node2.id, 2);
+        db.close();
+    }
+
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn committed_edge_delete_survives_crash_recovery() {
+    let dir = temp_dir("crash_recovery_edge_delete");
+
+    let src;
+    let dst;
+    let edge_id;
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        src = db.create_node().unwrap();
+        dst = db.create_node().unwrap();
+        edge_id = db.create_edge(src, dst).unwrap();
+        db.delete_edge(edge_id).unwrap();
+        drop(db);
+    }
+
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        let edges = db.scan_edges().unwrap();
+        assert_eq!(
+            edges.len(),
+            0,
+            "committed edge delete should survive recovery"
+        );
+        assert!(db.get_edge(edge_id).is_err());
+        let node_src = db.get_node(src).unwrap();
+        assert_eq!(node_src.id, 1);
+        let node_dst = db.get_node(dst).unwrap();
+        assert_eq!(node_dst.id, 2);
+        db.close();
+    }
+
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn delete_after_checkpoint_survives_reopen() {
+    let dir = temp_dir("delete_after_checkpoint");
+    let mut db = HiveDb::open(&dir).unwrap();
+
+    let id1 = db.create_node().unwrap();
+    let id2 = db.create_node().unwrap();
+    db.checkpoint().unwrap();
+
+    db.delete_node(id2).unwrap();
+    db.close();
+
+    let mut db = HiveDb::open(&dir).unwrap();
+    let nodes = db.scan_nodes().unwrap();
+    assert_eq!(nodes.len(), 1, "delete after checkpoint should persist");
+    assert!(db.get_node(id2).is_err());
+    let node = db.get_node(id1).unwrap();
+    assert_eq!(node.id, 1);
+    db.close();
+
+    cleanup_dir(&dir);
+}
+
+#[test]
 fn readonly_query_produces_no_wal_entries() {
     let dir = temp_dir("readonly_no_wal");
     let mut db = HiveDb::open(&dir).unwrap();

@@ -244,7 +244,7 @@ Implementation notes:
 - Mutating queries (CREATE, SET, DELETE) still go through full WAL commit for durability.
 - Added 8 new tests covering: read-only no-WAL, read-only with new label, crash recovery for execute(), rollback on failure, and more.
 
-## [ ] Step 6: Complete Storage Scan/Delete Production Tests
+## [x] Step 6: Complete Storage Scan/Delete Production Tests
 
 Why this comes after transaction hardening:
 - Delete behavior must be proven under rollback and recovery before adjacency chains and indexes depend on it.
@@ -259,7 +259,7 @@ What to implement:
 
 Files to study/change:
 - `core/db/hive_db.rs`
-- `core/storage/page/layout.rs`
+- `core/storage/page/format.rs`
 - `testing/rust/core/db/node_test.rs`
 - `testing/rust/core/db/edge_test.rs`
 - `testing/rust/core/db/wal_commit_test.rs`
@@ -282,6 +282,14 @@ Rust concepts to know first:
 Definition of done:
 - Scan/delete tests cover normal, rollback, reopen, and recovery behavior.
 - Meta count semantics are documented as allocation counters or live counters.
+
+Implementation notes:
+- Added 14 new tests across node_test.rs, edge_test.rs, and wal_commit_test.rs.
+- Node tests: multi-page scan (200 nodes), scan skips deleted slots, point read fails for deleted record, rollback restores deleted node, delete persists after reopen.
+- Edge tests: multi-page scan (200 edges), scan skips deleted slots, point read fails for deleted record, rollback restores deleted edge, delete persists after reopen.
+- WAL tests: committed delete survives crash recovery, uncommitted delete discarded on recovery, committed edge delete survives crash recovery, delete after checkpoint survives reopen.
+- Documented `MetaHeader.node_count` and `MetaHeader.edge_count` as allocation counters (never decremented on delete).
+- Total test count: 186 (up from 164 at start of Step 5).
 
 ## [ ] Step 7: Add Parser Production Test Coverage
 

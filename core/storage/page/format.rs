@@ -142,9 +142,9 @@ pub struct MetaHeader {
     pub page_size: u32,
     /// Total number of pages in the database file.
     pub db_size_pages: u32,
-    /// Monotonically increasing counter of created nodes.
+    /// Monotonically increasing counter of created nodes (allocation counter, never decremented).
     pub node_count: u64,
-    /// Monotonically increasing counter of created edges.
+    /// Monotonically increasing counter of created edges (allocation counter, never decremented).
     pub edge_count: u64,
     /// Monotonically increasing counter of property keys.
     pub property_count: u64,
