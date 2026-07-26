@@ -168,7 +168,7 @@ fn delete_node_rollback_restores_record() {
     let dir = temp_dir("delete_node_rollback");
     let mut db = HiveDb::open(&dir).unwrap();
 
-    let id1 = db.create_node().unwrap();
+    let _id1 = db.create_node().unwrap();
     let id2 = db.create_node().unwrap();
 
     {

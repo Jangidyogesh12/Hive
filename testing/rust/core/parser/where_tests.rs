@@ -72,7 +72,10 @@ fn where_and() {
 
 #[test]
 fn where_or() {
-    let c = clause_at(r#"MATCH (n) WHERE n.name = "A" OR n.name = "B" RETURN n"#, 1);
+    let c = clause_at(
+        r#"MATCH (n) WHERE n.name = "A" OR n.name = "B" RETURN n"#,
+        1,
+    );
     match c {
         Clause::Where(expr) => match expr {
             Expression::BinaryOp { op, .. } => assert_eq!(op, BinaryOp::Or),
@@ -96,7 +99,10 @@ fn where_not() {
 
 #[test]
 fn where_complex_precedence() {
-    let c = clause_at(r#"MATCH (n) WHERE n.a = 1 AND n.b = 2 OR n.c = 3 RETURN n"#, 1);
+    let c = clause_at(
+        r#"MATCH (n) WHERE n.a = 1 AND n.b = 2 OR n.c = 3 RETURN n"#,
+        1,
+    );
     match c {
         Clause::Where(expr) => match expr {
             Expression::BinaryOp { op, left, .. } => {

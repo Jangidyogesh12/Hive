@@ -119,7 +119,10 @@ fn return_with_skip_and_limit() {
 
 #[test]
 fn return_order_skip_limit_together() {
-    let c = clause_at(r#"MATCH (n) RETURN n.name ORDER BY n.age DESC SKIP 2 LIMIT 3"#, 1);
+    let c = clause_at(
+        r#"MATCH (n) RETURN n.name ORDER BY n.age DESC SKIP 2 LIMIT 3"#,
+        1,
+    );
     match c {
         Clause::Return(rc) => {
             assert_eq!(rc.order_by.len(), 1);

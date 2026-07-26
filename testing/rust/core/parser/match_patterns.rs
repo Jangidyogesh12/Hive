@@ -31,10 +31,7 @@ fn match_path_outgoing() {
         Clause::Match(mc) => match mc.pattern {
             Pattern::Path(path) => {
                 assert_eq!(path.segments.len(), 1);
-                assert_eq!(
-                    path.segments[0].relationship.direction,
-                    Direction::Outgoing
-                );
+                assert_eq!(path.segments[0].relationship.direction, Direction::Outgoing);
             }
             other => panic!("expected Path pattern, got {other:?}"),
         },
@@ -48,10 +45,7 @@ fn match_path_incoming() {
     match c {
         Clause::Match(mc) => match mc.pattern {
             Pattern::Path(path) => {
-                assert_eq!(
-                    path.segments[0].relationship.direction,
-                    Direction::Incoming
-                );
+                assert_eq!(path.segments[0].relationship.direction, Direction::Incoming);
             }
             other => panic!("expected Path pattern, got {other:?}"),
         },

@@ -28,10 +28,7 @@ fn set_string_value() {
     let c = clause_at(r#"MATCH (n) SET n.name = "Alice" RETURN n"#, 1);
     match c {
         Clause::Set(sc) => {
-            assert_eq!(
-                sc.value,
-                Expression::String("Alice".to_string())
-            );
+            assert_eq!(sc.value, Expression::String("Alice".to_string()));
         }
         other => panic!("expected Set clause, got {other:?}"),
     }

@@ -192,7 +192,7 @@ fn delete_edge_rollback_restores_record() {
     let n2 = db.create_node().unwrap();
     let n3 = db.create_node().unwrap();
 
-    let e1 = db.create_edge(n1, n2).unwrap();
+    let _e1 = db.create_edge(n1, n2).unwrap();
     let e2 = db.create_edge(n2, n3).unwrap();
 
     {
