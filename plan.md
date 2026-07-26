@@ -195,7 +195,7 @@ Implemented notes:
 - Updated executor so `RETURN n` produces a `Value::Map` with `id`, `label`, and `properties` fields.
 - Updated executor so `RETURN r` produces a `Value::Map` with `id`, `type`, `src`, `dst`, and `properties` fields.
 
-## [ ] Step 5: Harden Query Transaction Semantics
+## [x] Step 5: Harden Query Transaction Semantics
 
 Why this comes after metadata steps:
 - Query rollback cannot be production-grade until all query-touched metadata is transactional.
@@ -234,6 +234,15 @@ Definition of done:
 - Failure in a later clause rolls back earlier node/edge/metadata changes.
 - Read-only queries do not append WAL entries.
 - Crash/recovery tests prove committed query mutations recover exactly once.
+
+Implementation notes:
+- Added `QueryPlan::is_read_only()` that checks all steps are read-only (ScanNodes, TraverseEdges, Filter, Return).
+- Added `HiveDb::commit_readonly()` that marks dirty pages clean without WAL work.
+- Added `Transaction::commit_readonly()` that delegates to `commit_readonly()`.
+- Updated `executor::execute()` to detect read-only plans and use the WAL-free commit path.
+- Read-only queries (MATCH ... RETURN) produce zero WAL entries even when registering new labels.
+- Mutating queries (CREATE, SET, DELETE) still go through full WAL commit for durability.
+- Added 8 new tests covering: read-only no-WAL, read-only with new label, crash recovery for execute(), rollback on failure, and more.
 
 ## [ ] Step 6: Complete Storage Scan/Delete Production Tests
 

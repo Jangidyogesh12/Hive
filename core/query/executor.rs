@@ -25,9 +25,14 @@ type Row = HashMap<String, EntityRef>;
 
 pub fn execute(plan: &QueryPlan, db: &mut HiveDb) -> Result<QueryResult, DbError> {
     let mut tx = db.begin()?;
+    let readonly = plan.is_read_only();
     match execute_in_tx(plan, &mut tx) {
         Ok(result) => {
-            tx.commit()?;
+            if readonly {
+                tx.commit_readonly()?;
+            } else {
+                tx.commit()?;
+            }
             Ok(result)
         }
         Err(err) => {

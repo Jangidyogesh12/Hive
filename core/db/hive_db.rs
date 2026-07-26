@@ -908,6 +908,18 @@ impl HiveDb {
         Transaction::new(self, tx_id)
     }
 
+    /// Commits a read-only transaction by marking pages clean without WAL work.
+    ///
+    /// Used for queries that perform no mutations (no CREATE, MERGE, SET, DELETE).
+    /// Label and property-key registrations that occur during read-only queries
+    /// are idempotent and safe to leave on disk without WAL protection.
+    pub(crate) fn commit_readonly(&mut self) -> Result<(), DbError> {
+        for page_id in self.pager.dirty_page_ids() {
+            self.pager.mark_spilled(page_id)?;
+        }
+        Ok(())
+    }
+
     /// Commits a transaction by writing dirty page images to the WAL,
     /// syncing, and stamping page LSNs.
     pub(crate) fn commit_tx(&mut self, tx_id: TxId) -> Result<(), DbError> {

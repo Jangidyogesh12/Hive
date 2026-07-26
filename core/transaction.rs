@@ -178,6 +178,11 @@ impl<'a> Transaction<'a> {
         self.db.list_edge_properties(edge_id)
     }
 
+    /// Commits a read-only transaction without WAL work.
+    pub fn commit_readonly(self) -> Result<(), DbError> {
+        self.db.commit_readonly()
+    }
+
     /// Commits the transaction by writing dirty page images to the WAL,
     /// syncing, and stamping page LSNs.
     pub fn commit(self) -> Result<(), DbError> {

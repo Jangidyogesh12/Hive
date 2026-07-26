@@ -381,3 +381,133 @@ fn rollback_reuses_newly_allocated_overflow_page() {
     db.close();
     cleanup_dir(&dir);
 }
+
+#[test]
+fn readonly_query_produces_no_wal_entries() {
+    let dir = temp_dir("readonly_no_wal");
+    let mut db = HiveDb::open(&dir).unwrap();
+
+    let node_id = db.create_node().unwrap();
+    db.set_node_property(node_id, "name", &Value::String("alice".into()))
+        .unwrap();
+
+    db.checkpoint().unwrap();
+
+    let mut wal = Wal::open(&dir.join("wal.hive")).unwrap();
+    let entries_before = wal.read_all().unwrap();
+    assert!(
+        entries_before.is_empty(),
+        "WAL should be empty after checkpoint"
+    );
+
+    let result = db.execute(r#"MATCH (n) RETURN n.name AS name"#).unwrap();
+    assert_eq!(result.rows, vec![vec![Value::String("alice".to_string())]]);
+
+    let entries_after = wal.read_all().unwrap();
+    assert!(
+        entries_after.is_empty(),
+        "read-only query should not produce WAL entries"
+    );
+
+    db.close();
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn readonly_query_with_new_label_produces_no_wal_entries() {
+    let dir = temp_dir("readonly_new_label_no_wal");
+    let mut db = HiveDb::open(&dir).unwrap();
+
+    let result = db.execute(r#"MATCH (p:Person) RETURN p"#).unwrap();
+    assert!(result.rows.is_empty());
+
+    let mut wal = Wal::open(&dir.join("wal.hive")).unwrap();
+    let entries = wal.read_all().unwrap();
+    assert!(
+        entries.is_empty(),
+        "read-only query should not produce WAL entries even when registering a new label"
+    );
+
+    db.close();
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn create_query_survives_crash_recovery() {
+    let dir = temp_dir("query_crash_recovery");
+
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        db.execute(r#"CREATE (a:Person {name: "Alice", age: 30})"#)
+            .unwrap();
+        db.execute(r#"CREATE (b:Person {name: "Bob", age: 25})"#)
+            .unwrap();
+        drop(db);
+    }
+
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        let result = db
+            .execute(r#"MATCH (n:Person) RETURN n.name AS name, n.age AS age ORDER BY n.age"#)
+            .unwrap();
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![Value::String("Bob".to_string()), Value::Integer(25)],
+                vec![Value::String("Alice".to_string()), Value::Integer(30)],
+            ]
+        );
+        db.close();
+    }
+
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn set_property_survives_crash_recovery_via_execute() {
+    let dir = temp_dir("query_set_crash_recovery");
+
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        db.execute(r#"CREATE (a:Person {name: "Alice"})"#).unwrap();
+        db.execute(r#"MATCH (a:Person {name: "Alice"}) SET a.age = 30 RETURN a.age"#)
+            .unwrap();
+        drop(db);
+    }
+
+    {
+        let mut db = HiveDb::open(&dir).unwrap();
+        let result = db
+            .execute(r#"MATCH (a:Person {name: "Alice"}) RETURN a.age AS age"#)
+            .unwrap();
+        assert_eq!(result.rows, vec![vec![Value::Integer(30)]]);
+        db.close();
+    }
+
+    cleanup_dir(&dir);
+}
+
+#[test]
+fn rollback_restores_all_changes_on_query_failure() {
+    let dir = temp_dir("query_rollback_all");
+    let mut db = HiveDb::open(&dir).unwrap();
+
+    let node_id = db.create_node().unwrap();
+    db.set_node_property(node_id, "name", &Value::String("original".into()))
+        .unwrap();
+
+    db.checkpoint().unwrap();
+
+    let result =
+        db.execute(r#"CREATE (n:Person {name: "new"}) SET nonexistent.var.bad = 1 RETURN n"#);
+    assert!(result.is_err(), "query should fail on unknown variable");
+
+    let val = db.get_node_property(node_id, "name").unwrap();
+    assert_eq!(val, Value::String("original".into()));
+
+    let nodes = db.scan_nodes().unwrap();
+    assert_eq!(nodes.len(), 1, "no new nodes should persist after rollback");
+
+    db.close();
+    cleanup_dir(&dir);
+}

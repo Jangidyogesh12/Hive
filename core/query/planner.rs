@@ -73,6 +73,24 @@ pub enum NodeIndexHint {
     },
 }
 
+impl QueryPlan {
+    /// Returns `true` if this plan step performs no mutations (no CREATE, MERGE, SET, DELETE).
+    pub fn is_read_only(&self) -> bool {
+        match self {
+            QueryPlan::ScanNodes { .. }
+            | QueryPlan::TraverseEdges { .. }
+            | QueryPlan::Filter { .. }
+            | QueryPlan::Return(_) => true,
+            QueryPlan::CreateNode { .. }
+            | QueryPlan::CreateRelationship { .. }
+            | QueryPlan::MergeNode { .. }
+            | QueryPlan::Delete { .. }
+            | QueryPlan::SetProperty { .. } => false,
+            QueryPlan::Sequence(steps) => steps.iter().all(|s| s.is_read_only()),
+        }
+    }
+}
+
 pub fn plan(stmt: Statement) -> Result<QueryPlan, DbError> {
     let mut steps = Vec::new();
     let mut scope = HashSet::new();
