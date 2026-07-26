@@ -291,7 +291,7 @@ Implementation notes:
 - Documented `MetaHeader.node_count` and `MetaHeader.edge_count` as allocation counters (never decremented on delete).
 - Total test count: 186 (up from 164 at start of Step 5).
 
-## [ ] Step 7: Add Parser Production Test Coverage
+## [x] Step 7: Add Parser Production Test Coverage
 
 Why this comes after storage/query metadata foundations:
 - The parser already supports a subset, but production requires confidence that accepted syntax is intentional and rejected syntax fails clearly.
@@ -307,7 +307,7 @@ Files to study/change:
 - `parser/src/lexer.rs`
 - `parser/src/parser.rs`
 - `parser/src/token.rs`
-- New parser tests under `parser` or `testing/rust/core/query`.
+- `testing/rust/core/parser/` (9 test files)
 
 Database topics to know first:
 - Query language grammar.
@@ -326,6 +326,20 @@ Definition of done:
 - Every supported syntax form has parser tests.
 - Unsupported syntax fails with useful errors.
 - Parser tests can be run independently.
+
+Implementation notes (2026-07-26):
+- Added 79 tests across 9 files in `testing/rust/core/parser/`:
+  - `create.rs` - CREATE nodes, paths, edges (outgoing/incoming/undirected), multi-hop, properties
+  - `match_patterns.rs` - MATCH node/path patterns, all directions, variable-length relationships
+  - `where_tests.rs` - WHERE with all comparison operators, AND/OR/NOT, precedence
+  - `set_tests.rs` - SET with integer/string/boolean/float values, binary expressions
+  - `delete_tests.rs` - DELETE / DETACH DELETE (single/multiple variables)
+  - `merge_tests.rs` - MERGE nodes and paths
+  - `return_tests.rs` - RETURN properties, aliases, literals, variables, ORDER BY, SKIP, LIMIT
+  - `pipeline_tests.rs` - Multi-clause pipelines, semicolons, comments, case insensitivity
+  - `error_tests.rs` - Empty input, unsupported keywords, bare expressions, trailing garbage, missing tokens, unterminated strings, invalid ranges
+- Added `pub use hive_parser::error;` to `core/query/mod.rs` for error type access.
+- One limitation discovered: parser does not support unary minus (`-5`) in expressions.
 
 ## [ ] Step 8: Add Planner Production Test Coverage
 

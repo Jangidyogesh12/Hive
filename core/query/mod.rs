@@ -1,4 +1,5 @@
 pub use hive_parser::ast;
+pub use hive_parser::error;
 pub use hive_parser::parser;
 
 pub mod executor;
