@@ -44,10 +44,10 @@ pub struct EdgeRecord {
     pub src: u64,
     /// Packed record ID of the destination node.
     pub dst: u64,
-    /// Packed record ID of the next outgoing edge from `src`, or `NIL_ID` if none.
-    pub next_out_edge: u64,
     /// Packed record ID of the next incoming edge to `dst`, or `NIL_ID` if none.
     pub next_in_edge: u64,
+    /// Packed record ID of the next outgoing edge from `src`, or `NIL_ID` if none.
+    pub next_out_edge: u64,
     /// Reserved for future linked-list property storage (currently unused).
     pub first_property: u64,
     /// Inline property entries stored directly in the edge record.

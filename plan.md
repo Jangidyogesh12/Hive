@@ -446,7 +446,7 @@ Implementation notes (2026-07-27):
   - COMPLEX PIPELINES: CREATE+MATCH+SET+RETURN, MATCH+TRAVERSE+SET+RETURN, MATCH+WHERE+DELETE, MERGE+SET+RETURN
 - All 69 tests pass. Total workspace tests: 376 (up from 307 before Step 9).
 
-## [ ] Step 10: Maintain Adjacency Chains On Edge Create/Delete
+## [x] Step 10: Maintain Adjacency Chains On Edge Create/Delete
 
 Why this comes after delete and transaction tests:
 - Adjacency chains are extra persistent pointers and must rollback/recover correctly.

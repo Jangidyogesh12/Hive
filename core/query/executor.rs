@@ -274,7 +274,6 @@ fn traverse_edges(
         Some(label) => Some(label_id_for(tx, Some(label))?),
         None => None,
     };
-    let edges = tx.scan_edges()?;
     let mut out = Vec::new();
     for row in rows {
         let EntityRef::Node(from_id) = row.get(from_var).ok_or(DbError::QueryError(format!(
@@ -288,6 +287,11 @@ fn traverse_edges(
             )));
         };
 
+        let outgoing = match direction {
+            Direction::Outgoing | Direction::Undirected => true,
+            Direction::Incoming => false,
+        };
+        let edges = tx.get_edges_from_node(*from_id, outgoing)?;
         for (edge_id, edge) in &edges {
             if edge_label.is_some_and(|label_id| edge.label_id != label_id) {
                 continue;
@@ -396,8 +400,11 @@ fn delete_entities(
     }
 
     if detach {
-        for (edge_id, edge) in tx.scan_edges()? {
-            if node_ids.contains(&edge.src) || node_ids.contains(&edge.dst) {
+        for node_id in &node_ids {
+            for (edge_id, _) in tx.get_edges_from_node(*node_id, true)? {
+                edge_ids.insert(edge_id);
+            }
+            for (edge_id, _) in tx.get_edges_from_node(*node_id, false)? {
                 edge_ids.insert(edge_id);
             }
         }

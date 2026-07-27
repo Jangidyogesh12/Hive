@@ -109,6 +109,15 @@ impl<'a> Transaction<'a> {
         self.db.scan_edges()
     }
 
+    /// Walks the adjacency chain from a node and returns its connected edges.
+    pub fn get_edges_from_node(
+        &mut self,
+        node_id: NodeId,
+        outgoing: bool,
+    ) -> Result<Vec<(EdgeId, crate::storage::page::record::EdgeRecord)>, DbError> {
+        self.db.get_edges_from_node(node_id, outgoing)
+    }
+
     /// Registers a label name and returns its numeric ID.  Deduplicates automatically.
     pub fn register_label(&mut self, name: &str) -> Result<u32, DbError> {
         self.db

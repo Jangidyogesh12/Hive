@@ -9,7 +9,7 @@ use crate::storage::page::record::{EdgeRecord, NodeRecord, PropertyEntry};
 use crate::storage::pager::Pager;
 use crate::storage::property_key_store::PropertyKeyStore;
 use crate::transaction::Transaction;
-use crate::types::{EdgeId, NodeId, pack_record_id, unpack_record_id};
+use crate::types::{EdgeId, NIL_ID, NodeId, pack_record_id, unpack_record_id};
 use crate::value::{self, Value};
 use crate::wal::Wal;
 use crate::wal::recovery::{self, RecoveryOutcome};
@@ -336,6 +336,15 @@ impl HiveDb {
         edge.dst = dst_id;
         edge.label_id = label_id;
 
+        let (src_page_id, src_slot_id) = unpack_record_id(src_id);
+        let (dst_page_id, dst_slot_id) = unpack_record_id(dst_id);
+
+        let mut src_node = self.get_node(src_id).unwrap();
+        let mut dst_node = self.get_node(dst_id).unwrap();
+
+        edge.next_out_edge = src_node.first_out_edge;
+        edge.next_in_edge = dst_node.first_in_edge;
+
         let page_id = self.find_or_alloc_page(
             &mut before_images,
             PageType::DataEdge,
@@ -351,7 +360,25 @@ impl HiveDb {
 
         self.update_meta_edge_count(edge_id_counter, &mut before_images)?;
 
-        Ok(pack_record_id(page_id, slot.0))
+        let new_edge_id = pack_record_id(page_id, slot.0);
+
+        // Update src node: first_out_edge -> new edge
+        Self::capture_before_image(&mut self.pager, &mut before_images, src_page_id)?;
+        src_node.first_out_edge = new_edge_id;
+        let mut src_buf = vec![0u8; src_node.encoded_size()];
+        src_node.to_bytes(&mut src_buf)?;
+        let page_buf = self.pager.get_page_mut(src_page_id)?;
+        layout::update_record(page_buf, src_slot_id, &src_buf)?;
+
+        // Update dst node : first_in_edge -> new_edg
+        Self::capture_before_image(&mut self.pager, &mut before_images, dst_page_id)?;
+        dst_node.first_in_edge = new_edge_id;
+        let mut dst_buf = vec![0u8; dst_node.encoded_size()];
+        dst_node.to_bytes(&mut dst_buf)?;
+        let page_buf = self.pager.get_page_mut(dst_page_id)?;
+        layout::update_record(page_buf, dst_slot_id, &dst_buf)?;
+
+        Ok(new_edge_id)
     }
 
     /// Reads an edge by its packed EdgeId.
@@ -391,12 +418,42 @@ impl HiveDb {
         Ok(out)
     }
 
-    /// Returns `true` if any edge in the database references the given node as src or dst.
+    /// Walks the adjacency chain from a node and returns its connected edges.
+    pub fn get_edges_from_node(
+        &mut self,
+        node_id: NodeId,
+        outgoing: bool,
+    ) -> Result<Vec<(EdgeId, EdgeRecord)>, DbError> {
+        let node = self.get_node(node_id)?;
+        let mut out = Vec::new();
+        let mut current = if outgoing {
+            node.first_out_edge
+        } else {
+            node.first_in_edge
+        };
+        while current != NIL_ID {
+            let (page_id, slot_id) = unpack_record_id(current);
+            let page_buf = self.pager.get_page(page_id)?;
+            if let Some(bytes) = layout::read_record_bytes(page_buf, slot_id) {
+                let edge = EdgeRecord::from_bytes(bytes)?;
+                let next = if outgoing {
+                    edge.next_out_edge
+                } else {
+                    edge.next_in_edge
+                };
+                out.push((current, edge));
+                current = next;
+            } else {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Returns `true` if the node has any incident edges.
     pub fn node_has_edges(&mut self, node_id: NodeId) -> Result<bool, DbError> {
-        Ok(self
-            .scan_edges()?
-            .into_iter()
-            .any(|(_, edge)| edge.src == node_id || edge.dst == node_id))
+        let node = self.get_node(node_id)?;
+        Ok(node.first_out_edge != NIL_ID || node.first_in_edge != NIL_ID)
     }
 
     /// Deletes an edge by its packed EdgeId.  Wraps in an auto-committed transaction.
@@ -424,6 +481,83 @@ impl HiveDb {
         edge_id: EdgeId,
         mut before_images: Option<&mut Vec<BeforeImage>>,
     ) -> Result<(), DbError> {
+        let edge = self.get_edge(edge_id)?;
+
+        // --- Unlink from source's outgoing chain ---
+        let (src_page_id, src_slot_id) = unpack_record_id(edge.src);
+        let mut src_node = self.get_node(edge.src)?;
+
+        if src_node.first_out_edge == edge_id {
+            // Edge is the head of the outgoing chain — move head to next
+            Self::capture_before_image(&mut self.pager, &mut before_images, src_page_id)?;
+            src_node.first_out_edge = edge.next_out_edge;
+            let mut src_buf = vec![0u8; src_node.encoded_size()];
+            src_node.to_bytes(&mut src_buf)?;
+            let page_buf = self.pager.get_page_mut(src_page_id)?;
+            layout::update_record(page_buf, src_slot_id, &src_buf)?;
+        } else {
+            // Walk chain to find predecessor
+            let mut current = src_node.first_out_edge;
+            while current != NIL_ID {
+                let cur_edge = self.get_edge(current)?;
+                if cur_edge.next_out_edge == edge_id {
+                    // Found predecessor — re-link it to skip the deleted edge
+                    let (pred_page_id, pred_slot_id) = unpack_record_id(current);
+                    Self::capture_before_image(
+                        &mut self.pager,
+                        &mut before_images,
+                        pred_page_id,
+                    )?;
+                    let mut updated = cur_edge;
+                    updated.next_out_edge = edge.next_out_edge;
+                    let mut pred_buf = vec![0u8; updated.encoded_size()];
+                    updated.to_bytes(&mut pred_buf)?;
+                    let page_buf = self.pager.get_page_mut(pred_page_id)?;
+                    layout::update_record(page_buf, pred_slot_id, &pred_buf)?;
+                    break;
+                }
+                current = cur_edge.next_out_edge;
+            }
+        }
+
+        // --- Unlink from destination's incoming chain ---
+        let (dst_page_id, dst_slot_id) = unpack_record_id(edge.dst);
+        let mut dst_node = self.get_node(edge.dst)?;
+
+        if dst_node.first_in_edge == edge_id {
+            // Edge is the head of the incoming chain — move head to next
+            Self::capture_before_image(&mut self.pager, &mut before_images, dst_page_id)?;
+            dst_node.first_in_edge = edge.next_in_edge;
+            let mut dst_buf = vec![0u8; dst_node.encoded_size()];
+            dst_node.to_bytes(&mut dst_buf)?;
+            let page_buf = self.pager.get_page_mut(dst_page_id)?;
+            layout::update_record(page_buf, dst_slot_id, &dst_buf)?;
+        } else {
+            // Walk chain to find predecessor
+            let mut current = dst_node.first_in_edge;
+            while current != NIL_ID {
+                let cur_edge = self.get_edge(current)?;
+                if cur_edge.next_in_edge == edge_id {
+                    // Found predecessor — re-link it to skip the deleted edge
+                    let (pred_page_id, pred_slot_id) = unpack_record_id(current);
+                    Self::capture_before_image(
+                        &mut self.pager,
+                        &mut before_images,
+                        pred_page_id,
+                    )?;
+                    let mut updated = cur_edge;
+                    updated.next_in_edge = edge.next_in_edge;
+                    let mut pred_buf = vec![0u8; updated.encoded_size()];
+                    updated.to_bytes(&mut pred_buf)?;
+                    let page_buf = self.pager.get_page_mut(pred_page_id)?;
+                    layout::update_record(page_buf, pred_slot_id, &pred_buf)?;
+                    break;
+                }
+                current = cur_edge.next_in_edge;
+            }
+        }
+
+        // --- Finally, mark the edge record as dead ---
         let (page_id, slot_id) = unpack_record_id(edge_id);
         if slot_id == u16::MAX {
             return Err(DbError::ReadError);
