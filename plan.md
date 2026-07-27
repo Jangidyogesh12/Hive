@@ -289,7 +289,7 @@ Implementation notes:
 - Edge tests: multi-page scan (200 edges), scan skips deleted slots, point read fails for deleted record, rollback restores deleted edge, delete persists after reopen.
 - WAL tests: committed delete survives crash recovery, uncommitted delete discarded on recovery, committed edge delete survives crash recovery, delete after checkpoint survives reopen.
 - Documented `MetaHeader.node_count` and `MetaHeader.edge_count` as allocation counters (never decremented on delete).
-- Total test count: 186 (up from 164 at start of Step 5).
+- Total test count: 186 (up from 164 at start of Step 5, 307 after Step 8).
 
 ## [x] Step 7: Add Parser Production Test Coverage
 
@@ -341,7 +341,7 @@ Implementation notes (2026-07-26):
 - Added `pub use hive_parser::error;` to `core/query/mod.rs` for error type access.
 - One limitation discovered: parser does not support unary minus (`-5`) in expressions.
 
-## [ ] Step 8: Add Planner Production Test Coverage
+## [x] Step 8: Add Planner Production Test Coverage
 
 Why this comes after parser tests:
 - Planner tests depend on stable AST output.
@@ -374,6 +374,20 @@ Rust concepts to know first:
 Definition of done:
 - Planner tests cover create, match, traversal, where, set, delete, merge, return, order/limit.
 - Invalid plans fail before executor runs.
+
+Implementation notes (2026-07-27):
+- Added 42 tests in `testing/rust/core/query/planner_test.rs`:
+  - CREATE: node with label, properties, relationship path, relationship properties, multi-hop rejection, node without label/variable
+  - MATCH: node with/without label, path traversal, incoming/undirected direction, variable requires variable
+  - WHERE: filter step, unknown variable reference error
+  - SET: property step, unknown variable reference error
+  - DELETE: single/multiple variables, DETACH DELETE, unknown variable reference error
+  - MERGE: node, path rejection
+  - RETURN: variable, property, ORDER BY (ASC/DESC), SKIP/LIMIT, multiple items, unknown variable reference error
+  - INDEX HINTS: label-only, label+property, property-only, full scan, equality vs non-equality hint distinction
+  - VARIABLE-LENGTH TRAVERSAL: bounded and unbounded rejection
+  - COMPLEX PIPELINES: multi-clause combinations, is_read_only detection
+- All 42 tests pass. Formatting, clippy, and check pass.
 
 ## [ ] Step 9: Complete Executor Production Subset Tests And Semantics
 

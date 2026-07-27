@@ -1,3 +1,5 @@
+mod planner_test;
+
 use super::utils::utils::{cleanup_dir, temp_dir};
 use crate::db::hive_db::HiveDb;
 use crate::value::Value;
