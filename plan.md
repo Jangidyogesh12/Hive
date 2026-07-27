@@ -389,7 +389,7 @@ Implementation notes (2026-07-27):
   - COMPLEX PIPELINES: multi-clause combinations, is_read_only detection
 - All 42 tests pass. Formatting, clippy, and check pass.
 
-## [ ] Step 9: Complete Executor Production Subset Tests And Semantics
+## [x] Step 9: Complete Executor Production Subset Tests And Semantics
 
 Why this comes after planner tests:
 - Executor correctness depends on stable planned steps.
@@ -427,6 +427,24 @@ Definition of done:
 - Supported query subset is fully tested end to end.
 - Mutating query failures rollback all changes.
 - Query result shape is stable and documented.
+
+Implementation notes (2026-07-27):
+- Added 69 tests in `testing/rust/core/query/executor_test.rs`:
+  - CREATE: node with/without label/variable, multiple nodes, relationship with properties, variable reuse in single statement
+  - MATCH: by label, all nodes, path traversal (outgoing/undirected/incoming), empty results
+  - WHERE: equality, inequality operators (>, >=, <, <=, <>), AND/OR logic, NOT operator, string comparison, traversal filter
+  - SET: node/edge property, add new property, overwrite, literal values, sequential multi-property, type change
+  - DELETE: node, edge, DETACH DELETE, multiple variables, delete all matched
+  - MERGE: create new, reuse existing, different properties separate, without label, after create
+  - RETURN: multiple columns, aliases, literals, empty result, whole-entity node/edge map (Value::Map)
+  - ORDER BY: ASC, DESC, string ordering
+  - SKIP/LIMIT: skip, limit, both, skip exceeding count
+  - NULL BEHAVIOR: missing property returns null, null in comparison, null sorts before values
+  - ROLLBACK: on SET/DELETE unknown variable, preserves entities on failed DETACH
+  - REBINDING: scan rebinds to each match, traversal rebinds to each edge
+  - TYPE COMPARISON: integer/float cross-type, boolean equality, string ordering
+  - COMPLEX PIPELINES: CREATE+MATCH+SET+RETURN, MATCH+TRAVERSE+SET+RETURN, MATCH+WHERE+DELETE, MERGE+SET+RETURN
+- All 69 tests pass. Total workspace tests: 376 (up from 307 before Step 9).
 
 ## [ ] Step 10: Maintain Adjacency Chains On Edge Create/Delete
 

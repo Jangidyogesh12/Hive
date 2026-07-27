@@ -1,3 +1,4 @@
+mod executor_test;
 mod planner_test;
 
 use super::utils::utils::{cleanup_dir, temp_dir};
