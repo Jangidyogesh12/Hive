@@ -468,7 +468,7 @@ fn delete_edge() {
     db.execute(r#"CREATE (a)-[:R]->(b)"#).unwrap();
     db.execute(r#"CREATE (a)-[:R]->(c)"#).unwrap();
     db.execute(r#"MATCH (a)-[r:R]->(c) DELETE r"#).unwrap();
-    let r = db.execute(r#"MATCH (a)-[r:R]->(b) RETURN count(r)"#);
+    let _r = db.execute(r#"MATCH (a)-[r:R]->(b) RETURN count(r)"#);
     // Just verify it doesn't error; count may not exist yet
     db.close();
     cleanup_dir(&dir);
