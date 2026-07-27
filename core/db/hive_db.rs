@@ -503,11 +503,7 @@ impl HiveDb {
                 if cur_edge.next_out_edge == edge_id {
                     // Found predecessor — re-link it to skip the deleted edge
                     let (pred_page_id, pred_slot_id) = unpack_record_id(current);
-                    Self::capture_before_image(
-                        &mut self.pager,
-                        &mut before_images,
-                        pred_page_id,
-                    )?;
+                    Self::capture_before_image(&mut self.pager, &mut before_images, pred_page_id)?;
                     let mut updated = cur_edge;
                     updated.next_out_edge = edge.next_out_edge;
                     let mut pred_buf = vec![0u8; updated.encoded_size()];
@@ -540,11 +536,7 @@ impl HiveDb {
                 if cur_edge.next_in_edge == edge_id {
                     // Found predecessor — re-link it to skip the deleted edge
                     let (pred_page_id, pred_slot_id) = unpack_record_id(current);
-                    Self::capture_before_image(
-                        &mut self.pager,
-                        &mut before_images,
-                        pred_page_id,
-                    )?;
+                    Self::capture_before_image(&mut self.pager, &mut before_images, pred_page_id)?;
                     let mut updated = cur_edge;
                     updated.next_in_edge = edge.next_in_edge;
                     let mut pred_buf = vec![0u8; updated.encoded_size()];
