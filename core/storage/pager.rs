@@ -1,5 +1,5 @@
 use super::buffer_pool::BufferPool;
-use super::page::format::{META_PAGE_ID, FreelistPage, MetaHeader, PAGE_SIZE};
+use super::page::format::{FreelistPage, META_PAGE_ID, MetaHeader, PAGE_SIZE};
 use super::page::layout;
 use super::page_cache::{PageCache, PageId};
 use crate::errors::DbError;
@@ -402,9 +402,10 @@ impl Pager {
         entries: &[PageId],
     ) -> Result<(), DbError> {
         let mut buf = [0u8; PAGE_SIZE];
-        let mut flp = FreelistPage::new();
-        flp.next_page = next_page;
-        flp.entries = entries.to_vec();
+        let flp = FreelistPage {
+            next_page,
+            entries: entries.to_vec(),
+        };
         flp.to_bytes(&mut buf);
         self.file.write_page(page_id, &buf)?;
         Ok(())

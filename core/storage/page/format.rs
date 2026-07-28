@@ -340,3 +340,9 @@ impl FreelistPage {
         }
     }
 }
+
+impl Default for FreelistPage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
