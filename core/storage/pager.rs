@@ -1,5 +1,5 @@
 use super::buffer_pool::BufferPool;
-use super::page::format::{META_PAGE_ID, MetaHeader, PAGE_SIZE};
+use super::page::format::{META_PAGE_ID, FreelistPage, MetaHeader, PAGE_SIZE};
 use super::page::layout;
 use super::page_cache::{PageCache, PageId};
 use crate::errors::DbError;
@@ -85,17 +85,27 @@ impl FileHandle {
 }
 
 pub struct Pager {
+    /// Low-level file I/O handle for the database file.
     file: FileHandle,
+    /// In-memory cache of recently accessed pages (LRU eviction).
     page_cache: PageCache,
+    /// Reusable buffer pool to avoid repeated heap allocations for page I/O.
     pool: BufferPool,
+    /// Monotonically increasing log sequence number for ordering page changes (WAL).
     next_lsn: AtomicU64,
+    /// In-memory stack of page IDs available for reuse (pop on alloc, push on free).
     free_pages: Vec<PageId>,
+    /// Page ID of the first freelist page on disk (linked list head), or 0 if none.
+    freelist_head: PageId,
+    /// True if free_pages changed since last persist to disk.
+    freelist_dirty: bool,
 }
 
 impl Pager {
     /// Opens the pager for `hive.db` and creates its cache and reusable buffer pool.
     ///
     /// If the database file is empty, this initializes page 0 as the meta page.
+    /// Loads the persistent freelist from disk if present.
     pub fn open(
         db_dir: &Path,
         cache_capacity: usize,
@@ -115,11 +125,15 @@ impl Pager {
             pool,
             next_lsn: AtomicU64::new(1),
             free_pages: Vec::new(),
+            freelist_head: 0,
+            freelist_dirty: false,
         };
 
         let page_count = pager.page_count()?;
         if page_count == 0 {
             pager.bootstrap_new_db()?;
+        } else {
+            pager.load_freelist()?;
         }
 
         Ok(pager)
@@ -142,6 +156,25 @@ impl Pager {
             && evicted.was_dirty
         {
             self.flush_page_to_disk(evicted.page_id)?;
+        }
+
+        Ok(())
+    }
+
+    /// Loads the persistent freelist from disk into the in-memory free_pages Vec.
+    fn load_freelist(&mut self) -> Result<(), DbError> {
+        let mut meta_buf = [0u8; PAGE_SIZE];
+        self.file.read_page(META_PAGE_ID, &mut meta_buf)?;
+        let meta = layout::read_meta_header(&meta_buf);
+        self.freelist_head = meta.freelist_head;
+
+        let mut current = self.freelist_head;
+        while current != 0 {
+            let mut page_buf = [0u8; PAGE_SIZE];
+            self.file.read_page(current, &mut page_buf)?;
+            let flp = FreelistPage::from_bytes(&page_buf);
+            self.free_pages.extend(flp.entries);
+            current = flp.next_page;
         }
 
         Ok(())
@@ -290,6 +323,7 @@ impl Pager {
     }
 
     /// Makes a newly allocated page available for reuse in this pager session.
+    /// Persists the freed page ID to the persistent freelist.
     pub fn free_page(&mut self, page_id: PageId) -> Result<(), DbError> {
         if page_id == META_PAGE_ID || self.free_pages.contains(&page_id) {
             return Ok(());
@@ -302,6 +336,7 @@ impl Pager {
             self.page_cache.mark_clean(page_id)?;
         }
         self.free_pages.push(page_id);
+        self.freelist_dirty = true;
         Ok(())
     }
 
@@ -314,6 +349,89 @@ impl Pager {
             .data();
         self.file.write_page(page_id, &data)?;
         self.page_cache.mark_clean(page_id)?;
+        Ok(())
+    }
+
+    /// Persists the in-memory free_pages list to freelist pages on disk.
+    /// Allocates new pages at the end of the file for freelist storage.
+    fn persist_freelist(&mut self) -> Result<(), DbError> {
+        // Split free_pages into chunks that fit in one freelist page
+        let chunks: Vec<Vec<PageId>> = self
+            .free_pages
+            .chunks(FreelistPage::MAX_ENTRIES)
+            .map(|c| c.to_vec())
+            .collect();
+
+        // Allocate freelist pages (raw, not through free_pages to avoid recursion)
+        let mut freelist_page_ids: Vec<PageId> = Vec::with_capacity(chunks.len());
+        for _ in &chunks {
+            let page_id = self.allocate_page_raw()?;
+            freelist_page_ids.push(page_id);
+        }
+
+        // Write freelist data to pages and link them together
+        for i in 0..chunks.len() {
+            let next = if i + 1 < freelist_page_ids.len() {
+                freelist_page_ids[i + 1]
+            } else {
+                0
+            };
+            self.write_freelist_page_data(freelist_page_ids[i], next, &chunks[i])?;
+        }
+
+        // Update meta header freelist_head
+        let new_head = if freelist_page_ids.is_empty() {
+            0
+        } else {
+            freelist_page_ids[0]
+        };
+
+        // Update both in-memory and on-disk freelist_head
+        self.freelist_head = new_head;
+        self.update_meta_freelist_head()?;
+
+        self.freelist_dirty = false;
+        Ok(())
+    }
+
+    /// Writes freelist page data to disk (page type + next pointer + count + entries).
+    fn write_freelist_page_data(
+        &mut self,
+        page_id: PageId,
+        next_page: PageId,
+        entries: &[PageId],
+    ) -> Result<(), DbError> {
+        let mut buf = [0u8; PAGE_SIZE];
+        let mut flp = FreelistPage::new();
+        flp.next_page = next_page;
+        flp.entries = entries.to_vec();
+        flp.to_bytes(&mut buf);
+        self.file.write_page(page_id, &buf)?;
+        Ok(())
+    }
+
+    /// Allocates a new page without going through the freelist (raw append to file).
+    fn allocate_page_raw(&mut self) -> Result<PageId, DbError> {
+        let page_id = self.page_count()? as PageId;
+        let buf = [0u8; PAGE_SIZE];
+        self.file.write_page(page_id, &buf)?;
+        Ok(page_id)
+    }
+
+    /// Updates the freelist_head field in the meta header on disk.
+    fn update_meta_freelist_head(&mut self) -> Result<(), DbError> {
+        let mut meta_buf = [0u8; PAGE_SIZE];
+        self.file.read_page(META_PAGE_ID, &mut meta_buf)?;
+        let mut meta = layout::read_meta_header(&meta_buf);
+        meta.freelist_head = self.freelist_head;
+        layout::write_meta_header(&mut meta_buf, &meta);
+        self.file.write_page(META_PAGE_ID, &meta_buf)?;
+        // Also update in cache if present
+        if self.page_cache.contains(META_PAGE_ID)
+            && let Some(cached) = self.page_cache.get_mut(META_PAGE_ID)
+        {
+            layout::write_meta_header(cached.data_mut(), &meta);
+        }
         Ok(())
     }
 
@@ -334,13 +452,20 @@ impl Pager {
         self.file.sync()
     }
 
-    /// Syncs all pager-managed state to durable storage.
+    /// Syncs all pager-managed state to durable storage, including the persistent freelist.
     pub fn sync_all(&mut self) -> Result<(), DbError> {
+        if self.freelist_dirty {
+            self.persist_freelist()?;
+        }
         self.sync_file()
     }
 
     /// Flushes all pager-managed dirty pages without forcing an OS-level sync.
+    /// Includes the persistent freelist if dirty.
     pub fn flush_all(&mut self) -> Result<(), DbError> {
+        if self.freelist_dirty {
+            self.persist_freelist()?;
+        }
         self.flush_file()
     }
 

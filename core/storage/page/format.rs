@@ -279,3 +279,64 @@ impl SlotEntry {
         serializer::put_u16_le(buf, 2, self.length);
     }
 }
+
+/// On-disk freelist page storing reusable page IDs in a linked list.
+///
+/// Layout: `[page_type: u8][padding..][next_page: u32][count: u16][page_id entries...]`
+///
+/// The `next_page` field points to the next freelist page (0 = end of chain).
+/// Each entry is a 4-byte `PageId` referencing a freed page available for reuse.
+pub struct FreelistPage {
+    /// Page ID of the next freelist page, or 0 if this is the last page.
+    pub next_page: u32,
+    /// Page IDs of freed pages available for reuse.
+    pub entries: Vec<u32>,
+}
+
+impl FreelistPage {
+    /// Byte offset of the `next_page` field within a freelist page.
+    pub const NEXT_PAGE_OFFSET: usize = 20;
+    /// Byte offset of the `count` field within a freelist page.
+    pub const COUNT_OFFSET: usize = 24;
+    /// Byte offset where page ID entries begin.
+    pub const DATA_OFFSET: usize = 26;
+    /// Size in bytes of a single page ID entry.
+    pub const ENTRY_SIZE: usize = 4;
+    /// Maximum number of page IDs that fit in one freelist page.
+    pub const MAX_ENTRIES: usize = (PAGE_SIZE - Self::DATA_OFFSET) / Self::ENTRY_SIZE;
+
+    /// Creates an empty freelist page.
+    pub fn new() -> Self {
+        Self {
+            next_page: 0,
+            entries: Vec::new(),
+        }
+    }
+
+    /// Decodes a freelist page from its on-disk byte representation.
+    pub fn from_bytes(buf: &[u8]) -> Self {
+        let next_page = serializer::get_u32_le(buf, Self::NEXT_PAGE_OFFSET);
+        let count = serializer::get_u16_le(buf, Self::COUNT_OFFSET) as usize;
+        let mut entries = Vec::with_capacity(count);
+        for i in 0..count {
+            let offset = Self::DATA_OFFSET + i * Self::ENTRY_SIZE;
+            let page_id = serializer::get_u32_le(buf, offset);
+            if page_id != 0 {
+                entries.push(page_id);
+            }
+        }
+        Self { next_page, entries }
+    }
+
+    /// Encodes this freelist page into its on-disk byte representation.
+    pub fn to_bytes(&self, buf: &mut [u8]) {
+        buf.fill(0);
+        buf[0] = PageType::Freelist as u8;
+        serializer::put_u32_le(buf, Self::NEXT_PAGE_OFFSET, self.next_page);
+        serializer::put_u16_le(buf, Self::COUNT_OFFSET, self.entries.len() as u16);
+        for (i, &page_id) in self.entries.iter().enumerate() {
+            let offset = Self::DATA_OFFSET + i * Self::ENTRY_SIZE;
+            serializer::put_u32_le(buf, offset, page_id);
+        }
+    }
+}

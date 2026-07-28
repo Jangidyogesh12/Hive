@@ -484,7 +484,7 @@ Definition of done:
 - Edge create/delete updates chains correctly.
 - Rollback and recovery preserve chain correctness.
 
-## [ ] Step 11: Add Persistent Freelist And Record Reuse Policy
+## [x] Step 11: Add Persistent Freelist And Record Reuse Policy
 
 Why this comes after adjacency chains:
 - Space reuse must not break graph pointers or recovery.
@@ -520,6 +520,26 @@ Definition of done:
 - Freed pages survive restart.
 - Deleted record space is safely reusable.
 - Compaction does not invalidate live record IDs unless explicitly designed.
+
+Implementation notes (2026-07-28):
+- Added persistent freelist using `PageType::Freelist` pages (already defined in format.rs).
+- Freelist page layout: `[next_page: u32][count: u16][page_id entries...]` stored in regular page format.
+- `MetaHeader::freelist_head` (already defined) now points to the first freelist page on disk.
+- `Pager::free_page()` marks pages as free in memory and sets `freelist_dirty` flag.
+- `Pager::sync_all()` and `flush_all()` persist the freelist to disk before syncing.
+- `Pager::persist_freelist()` writes free_pages to freelist pages at the end of the file, links them together, and updates `MetaHeader::freelist_head`.
+- `Pager::open()` calls `load_freelist()` to restore free pages from disk on startup.
+- Record-level reuse: existing `layout::insert_record_at()` reuses dead slots within pages.
+- Page compaction: existing `layout::compact_page()` rewrites live records contiguously to reclaim fragmented space.
+- Added 7 new tests in `testing/rust/core/db/freelist_test.rs`:
+  - `freed_page_survives_reopen` - freed pages persist after database restart
+  - `deleted_record_space_is_reusable` - deleted record slots can be reused
+  - `page_compaction_reclaims_space` - compaction works after deletions
+  - `storage_integrity_after_multiple_reopen` - data survives multiple open/close cycles
+  - `edge_delete_and_reopen_preserves_freelist` - edge deletion and freelist persistence
+  - `page_reuse_after_compaction` - pages are reused after bulk deletions
+  - `rollback_on_allocated_page_returns_to_freelist` - rolled-back allocations return to freelist
+- All 383 tests pass (up from 376). Formatting, clippy, and check pass.
 
 ## [ ] Step 12: Implement Durable B-Tree Page Storage
 

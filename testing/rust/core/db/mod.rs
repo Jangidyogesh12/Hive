@@ -21,3 +21,6 @@ mod label_test;
 
 #[cfg(test)]
 mod long_string_test;
+
+#[cfg(test)]
+mod freelist_test;
