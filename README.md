@@ -20,15 +20,28 @@ Implemented today:
 
 - Persistent node, edge, property, string, label, metadata, free-list, index, and WAL files
 - Programmatic Rust API through the `hive` crate
-- Cypher parser, planner, executor, and ASCII result rendering
+- Hand-written recursive descent Cypher parser, planner, executor, and ASCII result rendering
 - Node label/property indexes and edge type indexes
 - Write-ahead log, checkpointing, crash recovery, and basic transactions
 - CLI REPL and one-shot query execution
+- Transactional metadata (labels, property keys)
+- Property key dictionary with collision-safe identity
+- Whole-entity return (`RETURN n` produces a map with id, label, properties)
+- Adjacency chains for efficient edge traversal
+- Persistent freelist and record reuse
 - CI quality gates for formatting, clippy, and tests
+- Example programs (social graph, knowledge graph)
 
 Still pending before `v0.1.0`:
 
-- Example programs
+- B-tree page storage for durable indexes
+- Index types and maintenance
+- Unique constraints
+- Production-safe MERGE
+- Query parameters
+- WITH pipeline clause, aggregation, OPTIONAL MATCH
+- Variable-length traversal
+- Concurrency and isolation
 - Release packaging and crates.io publishing
 
 ## Workspace Layout
@@ -44,6 +57,7 @@ This repository follows a Rust workspace layout:
 ├── core/              # Database engine crate (`hive_core`)
 ├── docs/              # Architecture, query, and storage docs
 ├── examples/          # Example apps and usage samples
+├── parser/            # Hand-written Cypher parser crate (`hive_parser`)
 ├── perf/              # Performance harnesses
 ├── public/            # Project assets
 ├── scripts/           # Developer automation
@@ -54,9 +68,10 @@ This repository follows a Rust workspace layout:
 ## Packages
 
 - `hive_core`: core database engine, storage layer, query engine, WAL, and transactions
-- `hive`: public Rust API crate that re-exports `hive_core`
+- `hive_parser`: hand-written recursive descent parser for the Cypher-like query language
+- `hive`: public Rust API crate that re-exports `hive_core` and `hive_parser`
 - `hive_cli`: command-line entrypoint for running Cypher queries against a local Hive database
-- `hive_core_testing`: moved core integration test crate under `testing/core`
+- `hive_core_testing`: integration test crate under `testing/rust`
 
 ## Quick Start
 
@@ -147,14 +162,15 @@ For Cypher from Rust, use the parser, planner, and executor directly:
 
 ```rust
 use hive::HiveDb;
-use hive::{parse, plan, Executor};
+use hive::query::{parser::parse, planner::plan};
+use hive::query::executor::Executor;
 
 fn run_query(db: &mut HiveDb, query: &str) -> Result<(), String> {
-    let statement = parse(query)?;
-    let plan = plan(statement).map_err(|error| error.to_string())?;
+    let statement = parse(query).map_err(|e| e.to_string())?;
+    let query_plan = plan(statement).map_err(|e| e.to_string())?;
     let result = Executor::new(db)
-        .execute(plan)
-        .map_err(|error| error.to_string())?;
+        .execute(query_plan)
+        .map_err(|e| e.to_string())?;
 
     if !result.columns.is_empty() {
         println!("{result}");
@@ -174,9 +190,12 @@ Hive supports a practical subset of Cypher:
 - `MATCH (n:Label) WHERE n.key = value RETURN n.key AS alias`
 - Directed, incoming, undirected, chained, and variable-length relationship matches
 - `SET n.key = value`
-- `DELETE n`
+- `DELETE n` / `DETACH DELETE n`
+- `ORDER BY n.key ASC/DESC`
+- `SKIP n` / `LIMIT n`
 - Literals: `NULL`, integers, floats, booleans, and double-quoted strings
 - Operators: `=`, `<>`, `>`, `>=`, `<`, `<=`, `AND`, `OR`, `NOT`
+- Whole-entity return: `RETURN n` produces a map with id, label, and properties
 
 See `docs/cypher.md` for examples and known limitations.
 
@@ -192,7 +211,7 @@ Hive stores each database as a directory of binary files:
 - `labels.hive`: label/type ID mappings
 - `indexes.hive`: persisted label, node property, and edge type indexes
 - `wal.hive`: write-ahead log for recovery
-- free-list files for reusable node and edge IDs
+- free-list pages for reusable node and edge IDs
 
 See `docs/storage.md` for more detail.
 
@@ -207,10 +226,15 @@ cargo clippy --workspace -- -D warnings
 cargo doc --workspace --no-deps
 ```
 
-Test workflow note:
+Test structure:
 
-- `cargo test -p hive_core` only checks the engine crate itself and currently runs `0` tests
-- The moved core test suite lives in `testing/core` and runs via `cargo test -p hive_core_testing`
+- Core engine tests live in `testing/rust/core/` and run via `cargo test -p hive_core_testing`
+- Parser tests: `testing/rust/core/parser/` (79 tests covering all supported syntax)
+- Planner tests: `testing/rust/core/query/planner_test.rs` (42 tests)
+- Executor tests: `testing/rust/core/query/executor_test.rs` (69 tests)
+- Storage tests: `testing/rust/core/db/` (node, edge, property, WAL, freelist, label tests)
 - For normal development, prefer `cargo test --workspace`
+
+CI runs formatting, clippy, and tests on every push and pull request (`.github/workflows/ci.yml`).
 
 More implementation detail is in `docs/architecture.md`, `docs/cypher.md`, `docs/storage.md`, and `plan.md`.
