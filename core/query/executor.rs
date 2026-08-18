@@ -129,6 +129,7 @@ fn create_nodes(
         let node_id = tx.create_node_with_label(label_id)?;
         for (key, expr) in &node.properties {
             let value = eval_expr(expr, &row, tx)?;
+            check_unique_constraint(tx, label_id, key, &value, Some(node_id as u64))?;
             tx.set_node_property(node_id, key, &value)?;
         }
         if let Some(variable) = variable {
@@ -208,6 +209,7 @@ fn merge_nodes(
         let node_id = tx.create_node_with_label(label_id)?;
         for (key, expr) in &node.properties {
             let value = eval_expr(expr, &row, tx)?;
+            check_unique_constraint(tx, label_id, key, &value, Some(node_id as u64))?;
             tx.set_node_property(node_id, key, &value)?;
         }
         if let Some(variable) = variable {
@@ -377,7 +379,11 @@ fn set_properties(
     for row in rows {
         let value = eval_expr(value_expr, row, tx)?;
         match row.get(variable) {
-            Some(EntityRef::Node(node_id)) => tx.set_node_property(*node_id, key, &value)?,
+            Some(EntityRef::Node(node_id)) => {
+                let node = tx.get_node(*node_id)?;
+                check_unique_constraint(tx, node.label_id, key, &value, Some(*node_id))?;
+                tx.set_node_property(*node_id, key, &value)?;
+            }
             Some(EntityRef::Edge(edge_id)) => tx.set_edge_property(*edge_id, key, &value)?,
             None => {
                 return Err(DbError::QueryError(format!(
@@ -692,6 +698,25 @@ fn label_id_for(tx: &mut Transaction<'_>, label: Option<&str>) -> Result<u32, Db
         Some(label) => tx.register_label(label),
         None => Ok(0),
     }
+}
+
+/// Checks a node property value against any unique constraint on the label/key.
+/// `excluding_record_id` is the record that is allowed to already hold the value
+/// (used when the node is being created or updated in-place).
+fn check_unique_constraint(
+    tx: &mut Transaction<'_>,
+    label_id: u32,
+    key: &str,
+    value: &Value,
+    excluding_record_id: Option<u64>,
+) -> Result<(), DbError> {
+    if label_id == 0 {
+        return Ok(());
+    }
+    let Some(key_id) = tx.find_property_key(key)? else {
+        return Ok(());
+    };
+    tx.check_unique_constraint(label_id, key_id, value, excluding_record_id)
 }
 
 /// Generates a default column name from an expression.

@@ -27,7 +27,7 @@ fn create_node_writes_wal_entries() {
         .collect();
 
     assert_eq!(begins.len(), 1, "expected one Begin entry");
-    assert!(page_images.len() >= 1, "expected at least one PageImage");
+    assert!(!page_images.is_empty(), "expected at least one PageImage");
     assert_eq!(commits.len(), 1, "expected one Commit entry");
 
     db.close();

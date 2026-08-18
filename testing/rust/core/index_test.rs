@@ -236,7 +236,6 @@ fn edge_property_index_matches_full_scan() {
         .unwrap()
         .unwrap();
     assert_eq!(ids.len(), 1);
-    drop(btree);
 
     // Also verify the second edge is indexed under 2015.
     let mut btree = db.open_btree(root);

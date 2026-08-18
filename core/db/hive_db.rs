@@ -313,6 +313,15 @@ impl HiveDb {
         Ok(root)
     }
 
+    /// Creates a unique node constraint on `(label, property_key)`.
+    pub fn create_unique_constraint(&mut self, label: &str, key: &str) -> Result<(), DbError> {
+        let tx_id = self.next_tx_id();
+        let mut tx = Transaction::new(self, tx_id)?;
+        tx.create_unique_constraint(label, key)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Parses, plans, and executes a Cypher-like query as one database operation.
     pub fn execute(&mut self, query: &str) -> Result<crate::query::result::QueryResult, DbError> {
         let statement = crate::query::parser::parse(query)

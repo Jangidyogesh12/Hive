@@ -66,7 +66,7 @@ fn set_with_binary_expression() {
             }
             other => {
                 assert!(
-                    format!("{other:?}").len() > 0,
+                    !format!("{other:?}").is_empty(),
                     "SET RHS should be a valid expression"
                 );
             }

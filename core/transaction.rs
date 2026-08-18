@@ -499,9 +499,145 @@ impl<'a> Transaction<'a> {
         let entries = btree.scan()?;
         let mut out = Vec::with_capacity(entries.len());
         for (key, ids) in entries {
-            out.push(decode_catalog_entry(&key, &ids)?);
+            let def = decode_catalog_entry(&key, &ids)?;
+            if def.entity_kind != EntityKind::UniqueConstraint {
+                out.push(def);
+            }
         }
         Ok(out)
+    }
+
+    /// Creates a unique node constraint on `(label, property_key)`.
+    /// Also ensures a per-label property index exists and backfills existing
+    /// nodes.  If existing nodes already violate uniqueness, creation fails.
+    pub fn create_unique_constraint(&mut self, label: &str, key: &str) -> Result<(), DbError> {
+        let label_id = self.register_label(label)?;
+        let key_id = self.register_property_key(key)?;
+
+        // Ensure a backing property index exists for enforcement.
+        self.create_index(EntityKind::NodeProperty, label_id, key_id)?;
+
+        let catalog_root = self.ensure_index_catalog()?;
+        let constraint_key = catalog_key(EntityKind::UniqueConstraint, label_id, key_id);
+        if self
+            .find_index_root_in_catalog(
+                catalog_root,
+                EntityKind::UniqueConstraint,
+                label_id,
+                key_id,
+            )?
+            .is_some()
+        {
+            return Ok(());
+        }
+
+        // Backfill existing nodes and detect pre-existing duplicates.
+        let nodes = self.scan_nodes()?;
+        for (node_id, node) in nodes {
+            if node.label_id != label_id {
+                continue;
+            }
+            let value = match self.get_node_property(node_id, key) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let bkey = match value_to_btree_key(&value) {
+                Ok(k) => k,
+                Err(_) => continue,
+            };
+            let current_root = self
+                .find_index_root(EntityKind::NodeProperty, label_id, key_id)?
+                .ok_or(DbError::WriteError)?;
+            let new_root = {
+                let mut btree = BTree::open(&mut self.db.pager, current_root);
+                if let Some(ids) = btree.lookup(&bkey)?
+                    && ids.iter().any(|&id| id != node_id)
+                {
+                    return Err(DbError::QueryError(format!(
+                        "cannot create unique constraint: existing duplicate values for label_id {} property_key_id {}",
+                        label_id, key_id
+                    )));
+                }
+                btree.insert(&bkey, node_id)?;
+                btree.root_page_id()
+            };
+            self.update_catalog_root_if_changed(
+                EntityKind::NodeProperty,
+                label_id,
+                key_id,
+                current_root,
+                new_root,
+            )?;
+        }
+
+        // Re-read the catalog root because backfill may have updated it.
+        let catalog_root = self.ensure_index_catalog()?;
+        let new_catalog_root =
+            self.btree_insert(catalog_root, &constraint_key, encode_root_as_record_id(0))?;
+        self.set_index_catalog_root(new_catalog_root)?;
+        Ok(())
+    }
+
+    /// Updates the catalog entry for an index when its data B-tree root changes.
+    fn update_catalog_root_if_changed(
+        &mut self,
+        entity_kind: EntityKind,
+        label_id: u32,
+        key_id: u32,
+        old_root: u32,
+        new_root: u32,
+    ) -> Result<(), DbError> {
+        if new_root == old_root {
+            return Ok(());
+        }
+        let catalog_root = self.index_catalog_root()?;
+        let key = catalog_key(entity_kind, label_id, key_id);
+        self.btree_delete(catalog_root, &key, encode_root_as_record_id(old_root))?;
+        let new_catalog_root =
+            self.btree_insert(catalog_root, &key, encode_root_as_record_id(new_root))?;
+        self.set_index_catalog_root(new_catalog_root)?;
+        Ok(())
+    }
+
+    /// Returns true if a unique constraint exists on `(label_id, property_key_id)`.
+    pub fn has_unique_constraint(
+        &mut self,
+        label_id: u32,
+        property_key_id: u32,
+    ) -> Result<bool, DbError> {
+        Ok(self
+            .find_index_root(EntityKind::UniqueConstraint, label_id, property_key_id)?
+            .is_some())
+    }
+
+    /// Checks a proposed property value against unique constraints.
+    /// Returns `Ok(())` if no conflict, or an error if another node already has
+    /// the same value under a unique constraint.
+    pub(crate) fn check_unique_constraint(
+        &mut self,
+        label_id: u32,
+        key_id: u32,
+        value: &Value,
+        excluding_record_id: Option<u64>,
+    ) -> Result<(), DbError> {
+        if !self.has_unique_constraint(label_id, key_id)? {
+            return Ok(());
+        }
+        let Some(root) = self.find_index_root(EntityKind::NodeProperty, label_id, key_id)? else {
+            return Ok(());
+        };
+        let mut btree = BTree::open(&mut self.db.pager, root);
+        if let Some(ids) = btree.lookup(&value_to_btree_key(value)?)? {
+            for &id in &ids {
+                if Some(id) != excluding_record_id {
+                    return Err(DbError::QueryError(format!(
+                        "unique constraint violation for label_id {} property_key_id {}",
+                        label_id, key_id
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -514,16 +650,22 @@ impl<'a> Transaction<'a> {
         node_id: NodeId,
         label_id: u32,
     ) -> Result<(), DbError> {
-        if let Some(root) = self.find_index_root(EntityKind::NodeLabel, label_id, 0)? {
-            let mut btree = BTree::open(&mut self.db.pager, root);
-            btree.insert(&BtreeKey::Int(label_id as i64), node_id)?;
-        }
+        self.insert_into_index(
+            EntityKind::NodeLabel,
+            label_id,
+            0,
+            &BtreeKey::Int(label_id as i64),
+            node_id,
+        )?;
 
-        if label_id != 0
-            && let Some(root) = self.find_index_root(EntityKind::NodeLabel, 0, 0)?
-        {
-            let mut btree = BTree::open(&mut self.db.pager, root);
-            btree.insert(&BtreeKey::Int(label_id as i64), node_id)?;
+        if label_id != 0 {
+            self.insert_into_index(
+                EntityKind::NodeLabel,
+                0,
+                0,
+                &BtreeKey::Int(label_id as i64),
+                node_id,
+            )?;
         }
         Ok(())
     }
@@ -575,24 +717,32 @@ impl<'a> Transaction<'a> {
         old_value: Option<&Value>,
         new_value: &Value,
     ) -> Result<(), DbError> {
+        let new_key = value_to_btree_key(new_value)?;
+
         // Per-label/type property index.
-        if let Some(root) = self.find_index_root(entity_kind, label_id, key_id)? {
-            let mut btree = BTree::open(&mut self.db.pager, root);
-            if let Some(old) = old_value {
-                btree.delete(&value_to_btree_key(old)?, record_id)?;
-            }
-            btree.insert(&value_to_btree_key(new_value)?, record_id)?;
+        if let Some(old) = old_value {
+            self.delete_from_index(
+                entity_kind,
+                label_id,
+                key_id,
+                &value_to_btree_key(old)?,
+                record_id,
+            )?;
         }
+        self.insert_into_index(entity_kind, label_id, key_id, &new_key, record_id)?;
 
         // Global property index (label_id == 0).
-        if label_id != 0
-            && let Some(root) = self.find_index_root(entity_kind, 0, key_id)?
-        {
-            let mut btree = BTree::open(&mut self.db.pager, root);
+        if label_id != 0 {
             if let Some(old) = old_value {
-                btree.delete(&value_to_btree_key(old)?, record_id)?;
+                self.delete_from_index(
+                    entity_kind,
+                    0,
+                    key_id,
+                    &value_to_btree_key(old)?,
+                    record_id,
+                )?;
             }
-            btree.insert(&value_to_btree_key(new_value)?, record_id)?;
+            self.insert_into_index(entity_kind, 0, key_id, &new_key, record_id)?;
         }
         Ok(())
     }
@@ -639,26 +789,21 @@ impl<'a> Transaction<'a> {
         properties: &[(u32, Value)],
     ) -> Result<(), DbError> {
         if label_id != 0 {
-            if let Some(root) = self.find_index_root(label_kind, label_id, 0)? {
-                let mut btree = BTree::open(&mut self.db.pager, root);
-                btree.delete(&BtreeKey::Int(label_id as i64), record_id)?;
-            }
-            if let Some(root) = self.find_index_root(label_kind, 0, 0)? {
-                let mut btree = BTree::open(&mut self.db.pager, root);
-                btree.delete(&BtreeKey::Int(label_id as i64), record_id)?;
-            }
+            self.delete_from_index(
+                label_kind,
+                label_id,
+                0,
+                &BtreeKey::Int(label_id as i64),
+                record_id,
+            )?;
+            self.delete_from_index(label_kind, 0, 0, &BtreeKey::Int(label_id as i64), record_id)?;
         }
 
         for (key_id, value) in properties {
-            if let Some(root) = self.find_index_root(property_kind, label_id, *key_id)? {
-                let mut btree = BTree::open(&mut self.db.pager, root);
-                btree.delete(&value_to_btree_key(value)?, record_id)?;
-            }
-            if label_id != 0
-                && let Some(root) = self.find_index_root(property_kind, 0, *key_id)?
-            {
-                let mut btree = BTree::open(&mut self.db.pager, root);
-                btree.delete(&value_to_btree_key(value)?, record_id)?;
+            let bkey = value_to_btree_key(value)?;
+            self.delete_from_index(property_kind, label_id, *key_id, &bkey, record_id)?;
+            if label_id != 0 {
+                self.delete_from_index(property_kind, 0, *key_id, &bkey, record_id)?;
             }
         }
         Ok(())
@@ -671,15 +816,62 @@ impl<'a> Transaction<'a> {
         label_id: u32,
     ) -> Result<(), DbError> {
         if label_id != 0 {
-            if let Some(root) = self.find_index_root(EntityKind::EdgeType, label_id, 0)? {
-                let mut btree = BTree::open(&mut self.db.pager, root);
-                btree.insert(&BtreeKey::Int(label_id as i64), edge_id)?;
-            }
-            if let Some(root) = self.find_index_root(EntityKind::EdgeType, 0, 0)? {
-                let mut btree = BTree::open(&mut self.db.pager, root);
-                btree.insert(&BtreeKey::Int(label_id as i64), edge_id)?;
-            }
+            self.insert_into_index(
+                EntityKind::EdgeType,
+                label_id,
+                0,
+                &BtreeKey::Int(label_id as i64),
+                edge_id,
+            )?;
+            self.insert_into_index(
+                EntityKind::EdgeType,
+                0,
+                0,
+                &BtreeKey::Int(label_id as i64),
+                edge_id,
+            )?;
         }
+        Ok(())
+    }
+
+    /// Inserts a record id into an index and updates the catalog if the
+    /// B-tree root changed.
+    fn insert_into_index(
+        &mut self,
+        entity_kind: EntityKind,
+        label_id: u32,
+        key_id: u32,
+        key: &BtreeKey,
+        record_id: u64,
+    ) -> Result<(), DbError> {
+        let old_root = match self.find_index_root(entity_kind, label_id, key_id)? {
+            Some(root) => root,
+            None => return Ok(()),
+        };
+        let new_root = {
+            let mut btree = BTree::open(&mut self.db.pager, old_root);
+            btree.insert(key, record_id)?;
+            btree.root_page_id()
+        };
+        self.update_catalog_root_if_changed(entity_kind, label_id, key_id, old_root, new_root)
+    }
+
+    /// Deletes a record id from an index.  Root changes are not expected on
+    /// delete because the implementation does not rebalance/merge pages.
+    fn delete_from_index(
+        &mut self,
+        entity_kind: EntityKind,
+        label_id: u32,
+        key_id: u32,
+        key: &BtreeKey,
+        record_id: u64,
+    ) -> Result<(), DbError> {
+        let old_root = match self.find_index_root(entity_kind, label_id, key_id)? {
+            Some(root) => root,
+            None => return Ok(()),
+        };
+        let mut btree = BTree::open(&mut self.db.pager, old_root);
+        btree.delete(key, record_id)?;
         Ok(())
     }
 }

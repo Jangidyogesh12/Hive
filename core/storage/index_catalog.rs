@@ -20,7 +20,7 @@
 use crate::errors::DbError;
 use crate::storage::btree::BtreeKey;
 
-/// The kind of entity an index covers.
+/// The kind of entity an index or constraint covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum EntityKind {
@@ -28,6 +28,7 @@ pub enum EntityKind {
     EdgeType = 1,
     NodeProperty = 2,
     EdgeProperty = 3,
+    UniqueConstraint = 4,
 }
 
 impl EntityKind {
@@ -37,6 +38,7 @@ impl EntityKind {
             1 => Some(Self::EdgeType),
             2 => Some(Self::NodeProperty),
             3 => Some(Self::EdgeProperty),
+            4 => Some(Self::UniqueConstraint),
             _ => None,
         }
     }

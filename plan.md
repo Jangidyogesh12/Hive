@@ -657,7 +657,7 @@ Implementation notes (2026-08-18):
 - Added 12 tests in `testing/rust/core/index_test.rs` covering: node label index vs full scan, per-label node property index, global node property index, SET updates, DELETE updates, edge type index maintenance, edge property index maintenance, rollback safety, reopen, crash recovery, idempotent index creation, and full-scan fallback.
 - Total workspace tests: 409.
 
-## [ ] Step 14: Add Unique Constraints
+## [x] Step 14: Add Unique Constraints
 
 Why this comes after index maintenance:
 - Unique constraints are special indexes with conflict rules.

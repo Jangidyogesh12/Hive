@@ -159,6 +159,7 @@ fn return_integer_literal() {
 }
 
 #[test]
+#[allow(clippy::approx_constant)]
 fn return_float_literal() {
     let c = clause_at("MATCH (n) RETURN 3.14", 1);
     match c {
