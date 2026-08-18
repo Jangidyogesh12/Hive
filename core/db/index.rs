@@ -1,4 +1,5 @@
-// Index store — currently re-exports the durable B+ tree implementation built
-// in Step 12.  Step 13 will add label/property index types on top of this tree.
+// Index store — re-exports the durable B+ tree implementation and the index
+// catalog types built in Step 13.
 
 pub use crate::storage::btree::{BTree, BtreeKey, RecordId};
+pub use crate::storage::index_catalog::{EntityKind, IndexDef};

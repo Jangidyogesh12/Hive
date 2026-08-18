@@ -595,7 +595,7 @@ Implementation notes (2026-08-18):
 - Added 14 tests in `testing/rust/core/btree_test.rs` covering: empty lookup, single leaf, many inserts/splits, duplicates, sorted vs random insert order, delete, delete-all, three-level root growth, committed reopen, uncommitted rollback, crash recovery, rollback of split pages, range scan with negative keys, and composite keys.
 - All workspace tests pass (397), plus fmt, clippy, and check.
 
-## [ ] Step 13: Add Index Types And Maintenance
+## [x] Step 13: Add Index Types And Maintenance
 
 Why this comes after B-tree storage:
 - Index types need a durable lookup structure first.
@@ -640,6 +640,22 @@ Definition of done:
 - Indexed plans and full-scan plans return identical results.
 - Index maintenance is rollback-safe.
 - Indexes survive reopen and recovery.
+
+Implementation notes (2026-08-18):
+- Added `core/storage/index_catalog.rs` with composite catalog keys:
+  `[entity_kind: i64][label_id: i64][property_key_id: i64]`.
+  Entity kinds: 0=NodeLabel, 1=EdgeType, 2=NodeProperty, 3=EdgeProperty.
+- `MetaHeader::root_index_page` now stores the root of the index catalog B-tree.
+- Added `Transaction` methods for catalog root management, index creation, lookup, and listing.
+- Added `HiveDb::create_node_label_index`, `create_edge_type_index`, `create_node_property_index`, `create_edge_property_index`.
+- Added automatic index maintenance in `Transaction` create/set/delete methods:
+  - Node label indexes are updated when nodes are created/deleted.
+  - Edge type indexes are updated when edges are created/deleted.
+  - Node/edge property indexes are updated on create, set, and delete (both per-label and global variants).
+- `Executor::scan_nodes` now uses planner index hints when a matching index exists, falling back to full scan otherwise.
+- Edge indexes are maintained but not yet used by `TraverseEdges`; traversal still uses adjacency chains.
+- Added 12 tests in `testing/rust/core/index_test.rs` covering: node label index vs full scan, per-label node property index, global node property index, SET updates, DELETE updates, edge type index maintenance, edge property index maintenance, rollback safety, reopen, crash recovery, idempotent index creation, and full-scan fallback.
+- Total workspace tests: 409.
 
 ## [ ] Step 14: Add Unique Constraints
 

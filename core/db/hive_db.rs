@@ -124,6 +124,11 @@ impl HiveDb {
         LabelStore::get_label_name(&mut self.pager, label_id)
     }
 
+    /// Looks up the label id for a given name, or returns `None` if not found.
+    pub fn find_label(&mut self, name: &str) -> Result<Option<u32>, DbError> {
+        LabelStore::find_label(&mut self.pager, name)
+    }
+
     /// Registers a property-key name and returns its numeric ID.
     pub fn register_property_key(&mut self, name: &str) -> Result<u32, DbError> {
         let tx_id = self.next_tx_id();
@@ -230,6 +235,82 @@ impl HiveDb {
     /// Opens an existing B-tree by its root page id.
     pub fn open_btree(&mut self, root_page_id: u32) -> BTree<'_> {
         BTree::open(&mut self.pager, root_page_id)
+    }
+
+    /// Creates a node label index and returns the data B-tree root page id.
+    pub fn create_node_label_index(&mut self, label: &str) -> Result<u32, DbError> {
+        let tx_id = self.next_tx_id();
+        let mut tx = Transaction::new(self, tx_id)?;
+        let label_id = tx.register_label(label)?;
+        let root = tx.create_index(
+            crate::storage::index_catalog::EntityKind::NodeLabel,
+            label_id,
+            0,
+        )?;
+        tx.commit()?;
+        Ok(root)
+    }
+
+    /// Creates an edge type index and returns the data B-tree root page id.
+    pub fn create_edge_type_index(&mut self, rel_type: &str) -> Result<u32, DbError> {
+        let tx_id = self.next_tx_id();
+        let mut tx = Transaction::new(self, tx_id)?;
+        let type_id = tx.register_label(rel_type)?;
+        let root = tx.create_index(
+            crate::storage::index_catalog::EntityKind::EdgeType,
+            type_id,
+            0,
+        )?;
+        tx.commit()?;
+        Ok(root)
+    }
+
+    /// Creates a node property index.
+    /// If `label` is `Some`, the index covers only nodes with that label.
+    /// If `label` is `None`, the index covers all nodes with the property.
+    pub fn create_node_property_index(
+        &mut self,
+        label: Option<&str>,
+        key: &str,
+    ) -> Result<u32, DbError> {
+        let tx_id = self.next_tx_id();
+        let mut tx = Transaction::new(self, tx_id)?;
+        let label_id = match label {
+            Some(l) => tx.register_label(l)?,
+            None => 0,
+        };
+        let key_id = tx.register_property_key(key)?;
+        let root = tx.create_index(
+            crate::storage::index_catalog::EntityKind::NodeProperty,
+            label_id,
+            key_id,
+        )?;
+        tx.commit()?;
+        Ok(root)
+    }
+
+    /// Creates an edge property index.
+    /// If `rel_type` is `Some`, the index covers only edges with that type.
+    /// If `rel_type` is `None`, the index covers all edges with the property.
+    pub fn create_edge_property_index(
+        &mut self,
+        rel_type: Option<&str>,
+        key: &str,
+    ) -> Result<u32, DbError> {
+        let tx_id = self.next_tx_id();
+        let mut tx = Transaction::new(self, tx_id)?;
+        let label_id = match rel_type {
+            Some(t) => tx.register_label(t)?,
+            None => 0,
+        };
+        let key_id = tx.register_property_key(key)?;
+        let root = tx.create_index(
+            crate::storage::index_catalog::EntityKind::EdgeProperty,
+            label_id,
+            key_id,
+        )?;
+        tx.commit()?;
+        Ok(root)
     }
 
     /// Parses, plans, and executes a Cypher-like query as one database operation.
@@ -982,7 +1063,7 @@ impl HiveDb {
     }
 
     /// Updates the meta header after capturing its before imager.
-    fn update_meta_header(
+    pub(crate) fn update_meta_header(
         &mut self,
         before_images: &mut Option<&mut Vec<BeforeImage>>,
         update: impl FnOnce(&mut MetaHeader),

@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use crate::db::hive_db::HiveDb;
 use crate::errors::DbError;
 use crate::query::ast::{BinaryOp, Direction, Expression, NodePattern, ReturnClause, UnaryOp};
-use crate::query::planner::QueryPlan;
+use crate::query::planner::{NodeIndexHint, QueryPlan};
 use crate::query::result::QueryResult;
 use crate::storage::page::record::{NodeRecord, PropertyEntry};
 use crate::transaction::Transaction;
@@ -70,8 +70,8 @@ fn execute_in_tx(plan: &QueryPlan, tx: &mut Transaction<'_>) -> Result<QueryResu
                 variable,
                 label,
                 filter,
-                ..
-            } => rows = scan_nodes(rows, variable, label, filter, tx)?,
+                index_hint,
+            } => rows = scan_nodes(rows, variable, label, filter, index_hint, tx)?,
             QueryPlan::TraverseEdges {
                 from_var,
                 edge_type,
@@ -218,19 +218,38 @@ fn merge_nodes(
     Ok(out)
 }
 
-/// Scans all nodes (optionally filtered by label and predicate) and binds them to a variable.
+/// Scans nodes (optionally using an index) and binds them to a variable.
 fn scan_nodes(
     rows: Vec<Row>,
     variable: &str,
     label: &Option<String>,
     filter: &Option<Expression>,
+    index_hint: &NodeIndexHint,
     tx: &mut Transaction<'_>,
 ) -> Result<Vec<Row>, DbError> {
     let wanted_label_id = match label {
         Some(label) => Some(label_id_for(tx, Some(label))?),
         None => None,
     };
-    let nodes = tx.scan_nodes()?;
+
+    // Try to use an index when a matching hint is present.
+    let indexed_ids: Option<Vec<NodeId>> = match index_hint {
+        NodeIndexHint::Label { label } => tx.lookup_nodes_by_label(label)?,
+        NodeIndexHint::Property { key, value } => tx.lookup_nodes_by_property(key, value)?,
+        NodeIndexHint::LabelAndProperty { label, key, value } => {
+            tx.lookup_nodes_by_label_and_property(label, key, value)?
+        }
+        NodeIndexHint::FullScan => None,
+    };
+
+    let nodes: Vec<(NodeId, NodeRecord)> = match indexed_ids {
+        Some(ids) => ids
+            .into_iter()
+            .map(|id| tx.get_node(id).map(|node| (id, node)))
+            .collect::<Result<Vec<_>, _>>()?,
+        None => tx.scan_nodes()?,
+    };
+
     let mut out = Vec::new();
     for row in rows {
         for (node_id, node) in &nodes {
