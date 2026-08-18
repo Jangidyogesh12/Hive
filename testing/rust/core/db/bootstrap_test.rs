@@ -15,7 +15,7 @@ fn pager_creates_meta_page_on_first_open() {
 
     let meta = MetaHeader::from_bytes(page);
     assert_eq!(&meta.magic, &HIVE_MAGIC);
-    assert_eq!(meta.version, 2);
+    assert_eq!(meta.version, 3);
     assert_eq!(meta.page_size as usize, PAGE_SIZE);
     assert_eq!(meta.db_size_pages, 1);
     assert_eq!(meta.node_count, 0);
@@ -65,7 +65,7 @@ fn hivedb_open_creates_valid_database() {
 
     let meta = MetaHeader::from_bytes(page);
     assert_eq!(&meta.magic, &HIVE_MAGIC);
-    assert_eq!(meta.version, 2);
+    assert_eq!(meta.version, 3);
     assert_eq!(meta.page_size as usize, PAGE_SIZE);
 
     cleanup_dir(&dir);

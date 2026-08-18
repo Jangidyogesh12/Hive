@@ -1,4 +1,5 @@
 use crate::errors::DbError;
+use crate::storage::btree::BTree;
 use crate::storage::label_store::LabelStore;
 use crate::storage::overflow_store::OverflowStore;
 use crate::storage::page::format::{
@@ -184,6 +185,51 @@ impl HiveDb {
     /// Looks up the `key_id` for a given property name, or returns `None` if not found.
     pub fn find_property_key(&mut self, name: &str) -> Result<Option<u32>, DbError> {
         PropertyKeyStore::find_property_key(&mut self.pager, name)
+    }
+
+    /// Creates a new empty B-tree index, persists its root page id, and commits.
+    /// Returns the root page id of the new tree.
+    pub fn create_btree(&mut self) -> Result<u32, DbError> {
+        let tx_id = self.next_tx_id();
+        let mut before_images = Vec::new();
+
+        let root = match self.pager.allocate_page() {
+            Ok(root) => root,
+            Err(err) => {
+                self.rollback_pages(&before_images)?;
+                return Err(err);
+            }
+        };
+        if let Err(err) =
+            Self::capture_allocated_page(&mut self.pager, &mut Some(&mut before_images), root)
+        {
+            self.rollback_pages(&before_images)?;
+            return Err(err);
+        }
+        {
+            let buf = self.pager.get_page_mut(root)?;
+            crate::storage::btree::page::init_leaf_page(buf);
+        }
+
+        if let Err(err) = self.update_meta_header(&mut Some(&mut before_images), |meta| {
+            meta.root_index_page = root;
+        }) {
+            self.rollback_pages(&before_images)?;
+            return Err(err);
+        }
+
+        match self.commit_tx(tx_id) {
+            Ok(()) => Ok(root),
+            Err(err) => {
+                self.rollback_pages(&before_images)?;
+                Err(err)
+            }
+        }
+    }
+
+    /// Opens an existing B-tree by its root page id.
+    pub fn open_btree(&mut self, root_page_id: u32) -> BTree<'_> {
+        BTree::open(&mut self.pager, root_page_id)
     }
 
     /// Parses, plans, and executes a Cypher-like query as one database operation.
@@ -955,7 +1001,7 @@ impl HiveDb {
     }
 
     /// Captures the current page image for rollback before modifying it.
-    fn capture_before_image(
+    pub(crate) fn capture_before_image(
         pager: &mut Pager,
         before_images: &mut Option<&mut Vec<BeforeImage>>,
         page_id: u32,
@@ -976,7 +1022,7 @@ impl HiveDb {
     }
 
     /// Captures a newly allocated page so it can be freed on rollback.
-    fn capture_allocated_page(
+    pub(crate) fn capture_allocated_page(
         pager: &mut Pager,
         before_images: &mut Option<&mut Vec<BeforeImage>>,
         page_id: u32,

@@ -1,3 +1,4 @@
+pub mod btree;
 pub mod buffer_pool;
 pub mod label_store;
 pub mod overflow_store;

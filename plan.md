@@ -541,7 +541,7 @@ Implementation notes (2026-07-28):
   - `rollback_on_allocated_page_returns_to_freelist` - rolled-back allocations return to freelist
 - All 383 tests pass (up from 376). Formatting, clippy, and check pass.
 
-## [ ] Step 12: Implement Durable B-Tree Page Storage
+## [x] Step 12: Implement Durable B-Tree Page Storage
 
 Why this comes after metadata and storage correctness:
 - Index keys need stable property-key metadata and recovery-safe page mutation.
@@ -584,12 +584,25 @@ Definition of done:
 - Inserts and deletes survive WAL recovery.
 - Split/root growth tests pass.
 
+Implementation notes (2026-08-18):
+- Added `core/storage/btree/` module with page-oriented B+ tree implementation.
+- Page layout reuses the existing 20-byte `PageHeader`: `slot_count` is cell count, `free_space_offset` is the cell content area start, `first_freeblock` tracks deleted cell space, and `reserved` holds the interior leftmost pointer.
+- Leaf cells store `[key_len][key][rid_count][rid*]`; interior cells store `[key_len][key][right_child_page]`.  The leftmost pointer covers keys `< key_0`; cell `i` is the right child for `[key_i, key_{i+1})`.
+- `BtreeKey` enum supports Null, Int, Text, Bytes, and Composite with a canonical byte encoding so lexicographic order matches logical order (signed integers use sign-bit flip).
+- Implemented search cursor, insert with leaf/interior splitting, root growth, delete with freeblock reuse, and forward scan.
+- WAL durability is achieved by running B-tree mutations inside transactions: `Transaction::btree_insert` / `btree_delete` capture before-images of all touched pages and record newly allocated pages so rollback frees them.
+- Added `MetaHeader::root_index_page` (format version bumped to 3) as a transitional placeholder. Step 13 should replace/supersede this with a proper index catalog that maps `(entity_kind, label/type, property_key)` to a B-tree root page id.
+- Added 14 tests in `testing/rust/core/btree_test.rs` covering: empty lookup, single leaf, many inserts/splits, duplicates, sorted vs random insert order, delete, delete-all, three-level root growth, committed reopen, uncommitted rollback, crash recovery, rollback of split pages, range scan with negative keys, and composite keys.
+- All workspace tests pass (397), plus fmt, clippy, and check.
+
 ## [ ] Step 13: Add Index Types And Maintenance
 
 Why this comes after B-tree storage:
 - Index types need a durable lookup structure first.
+- Multiple indexes cannot share a single root page, so an index catalog is required before any secondary index can be used.
 
 What to implement:
+- **Index catalog**: a durable mapping from `(entity_kind, label_or_type, property_key)` to a B-tree root page id. The catalog itself may be a B-tree keyed by composite catalog keys.
 - Node label index.
 - Edge type index.
 - Node property index.
@@ -603,9 +616,12 @@ Files to study/change:
 - `core/transaction.rs`
 - `core/query/planner.rs`
 - `core/query/executor.rs`
+- `core/storage/btree/*` (for the catalog B-tree)
+- `core/storage/page/format.rs` (if MetaHeader needs a catalog root page slot)
 
 Database topics to know first:
 - Secondary indexes.
+- System catalogs / index dictionaries.
 - Covering vs non-covering indexes.
 - Index consistency.
 - Write amplification.

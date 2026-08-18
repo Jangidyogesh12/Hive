@@ -1,5 +1,6 @@
 use crate::db::hive_db::HiveDb;
 use crate::errors::DbError;
+use crate::storage::btree::{self, BTree, BtreeKey, RecordId};
 use crate::types::{EdgeId, NodeId};
 use crate::value::Value;
 use crate::wal::wal_entry::TxId;
@@ -196,6 +197,81 @@ impl<'a> Transaction<'a> {
     /// syncing, and stamping page LSNs.
     pub fn commit(self) -> Result<(), DbError> {
         self.db.commit_tx(self.tx_id)
+    }
+
+    /// Creates a new empty B-tree as part of this transaction.
+    /// Returns the root page id of the new tree.
+    pub fn create_btree(&mut self) -> Result<u32, DbError> {
+        let root = self.db.pager.allocate_page()?;
+        HiveDb::capture_allocated_page(
+            &mut self.db.pager,
+            &mut Some(&mut self.before_images),
+            root,
+        )?;
+        let buf = self.db.pager.get_page_mut(root)?;
+        crate::storage::btree::page::init_leaf_page(buf);
+        Ok(root)
+    }
+
+    /// Inserts a record id into a B-tree as part of this transaction.
+    /// Returns the (possibly changed) root page id.
+    pub fn btree_insert(
+        &mut self,
+        root_page_id: u32,
+        key: &BtreeKey,
+        rid: RecordId,
+    ) -> Result<u32, DbError> {
+        let before_pages = btree::collect_pages(&mut self.db.pager, root_page_id)?;
+        for page_id in &before_pages {
+            HiveDb::capture_before_image(
+                &mut self.db.pager,
+                &mut Some(&mut self.before_images),
+                *page_id,
+            )?;
+        }
+
+        let new_root = {
+            let mut btree = BTree::open(&mut self.db.pager, root_page_id);
+            btree.insert(key, rid)?;
+            btree.root_page_id()
+        };
+
+        let after_pages: std::collections::HashSet<u32> =
+            btree::collect_pages(&mut self.db.pager, new_root)?
+                .into_iter()
+                .collect();
+        let before_set: std::collections::HashSet<u32> = before_pages.into_iter().collect();
+        for page_id in after_pages.difference(&before_set) {
+            HiveDb::capture_allocated_page(
+                &mut self.db.pager,
+                &mut Some(&mut self.before_images),
+                *page_id,
+            )?;
+        }
+
+        Ok(new_root)
+    }
+
+    /// Deletes a record id from a B-tree as part of this transaction.
+    /// Returns `true` if the pair existed.
+    pub fn btree_delete(
+        &mut self,
+        root_page_id: u32,
+        key: &BtreeKey,
+        rid: RecordId,
+    ) -> Result<bool, DbError> {
+        let before_pages = btree::collect_pages(&mut self.db.pager, root_page_id)?;
+        for page_id in &before_pages {
+            HiveDb::capture_before_image(
+                &mut self.db.pager,
+                &mut Some(&mut self.before_images),
+                *page_id,
+            )?;
+        }
+
+        let mut btree = BTree::open(&mut self.db.pager, root_page_id);
+        let deleted = btree.delete(key, rid)?;
+        Ok(deleted)
     }
 
     /// Rolls back all page changes made through this transaction.

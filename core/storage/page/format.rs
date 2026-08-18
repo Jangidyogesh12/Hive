@@ -6,7 +6,7 @@ pub const REGULAR_HEADER_SIZE: usize = 20;
 pub const META_HEADER_SIZE: usize = 100;
 pub const SLOT_ENTRY_SIZE: usize = 4;
 pub const HIVE_MAGIC: [u8; 16] = [b'H', b'I', b'V', b'E', 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
-pub const CURRENT_VERSION: u32 = 2;
+pub const CURRENT_VERSION: u32 = 3;
 pub const META_PAGE_ID: u32 = 0;
 
 /// Returns true if the page buffer starts with the Hive magic bytes.
@@ -160,6 +160,8 @@ pub struct MetaHeader {
     pub root_string_page: u32,
     /// Page ID of the freelist head, or 0 if none.
     pub freelist_head: u32,
+    /// Page ID of the root B-tree index page, or 0 if none.
+    pub root_index_page: u32,
     /// User-facing schema version number.
     pub schema_version: u32,
     /// CRC32 checksum of the meta page bytes.
@@ -185,6 +187,7 @@ impl MetaHeader {
             root_label_page: 0,
             root_string_page: 0,
             freelist_head: 0,
+            root_index_page: 0,
             schema_version: 0,
             checksum: 0,
             lsn: 0,
@@ -209,9 +212,10 @@ impl MetaHeader {
             root_label_page: serializer::get_u32_le(buf, 68),
             root_string_page: serializer::get_u32_le(buf, 72),
             freelist_head: serializer::get_u32_le(buf, 76),
-            schema_version: serializer::get_u32_le(buf, 80),
-            checksum: serializer::get_u32_le(buf, 84),
-            lsn: serializer::get_u32_le(buf, 88),
+            root_index_page: serializer::get_u32_le(buf, 80),
+            schema_version: serializer::get_u32_le(buf, 84),
+            checksum: serializer::get_u32_le(buf, 88),
+            lsn: serializer::get_u32_le(buf, 92),
         }
     }
 
@@ -231,9 +235,10 @@ impl MetaHeader {
         serializer::put_u32_le(buf, 68, self.root_label_page);
         serializer::put_u32_le(buf, 72, self.root_string_page);
         serializer::put_u32_le(buf, 76, self.freelist_head);
-        serializer::put_u32_le(buf, 80, self.schema_version);
-        serializer::put_u32_le(buf, 84, self.checksum);
-        serializer::put_u32_le(buf, 88, self.lsn);
+        serializer::put_u32_le(buf, 80, self.root_index_page);
+        serializer::put_u32_le(buf, 84, self.schema_version);
+        serializer::put_u32_le(buf, 88, self.checksum);
+        serializer::put_u32_le(buf, 92, self.lsn);
     }
 }
 
