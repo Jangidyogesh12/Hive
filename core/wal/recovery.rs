@@ -1,5 +1,6 @@
 use crate::errors::DbError;
-use crate::storage::page::format::PAGE_SIZE;
+use crate::storage::page::format::{META_PAGE_ID, PAGE_SIZE};
+use crate::storage::page::layout;
 use crate::storage::pager::{Lsn, Pager};
 use crate::wal::Wal;
 use crate::wal::wal_entry::{TxId, WalEntry};
@@ -65,7 +66,7 @@ pub fn recover(db_dir: &Path, pager: &mut Pager) -> Result<RecoveryOutcome, DbEr
             }
 
             let disk_page = pager.read_page_from_disk(*page_id)?;
-            let disk_page_lsn = extract_page_lsn(&disk_page);
+            let disk_page_lsn = extract_page_lsn(*page_id, &disk_page);
 
             if *page_lsn > disk_page_lsn {
                 pager.write_page_to_disk(*page_id, bytes)?;
@@ -86,6 +87,12 @@ pub fn recover(db_dir: &Path, pager: &mut Pager) -> Result<RecoveryOutcome, DbEr
     }
 }
 
-fn extract_page_lsn(page_bytes: &[u8; PAGE_SIZE]) -> Lsn {
+/// Reads a page's stamped LSN from raw bytes. Page 0 uses the meta layout
+/// (LSN at a different offset); stamping and extraction must agree or redo
+/// silently skips pages.
+fn extract_page_lsn(page_id: u32, page_bytes: &[u8; PAGE_SIZE]) -> Lsn {
+    if page_id == META_PAGE_ID {
+        return layout::read_meta_header(page_bytes).lsn as Lsn;
+    }
     u32::from_le_bytes(page_bytes[12..16].try_into().unwrap()) as Lsn
 }

@@ -84,8 +84,79 @@ fn repl(db: &mut HiveDb, mut db_path: PathBuf) -> Result<(), String> {
                 db_path = next_db_path;
                 println!("Connected to {}", db_path.display());
             }
-            _ => match db.execute(input) {
-                Ok(result) => println!("{result}"),
+            _ if input.starts_with(".explain ") => {
+                let query = input.trim_start_matches(".explain ").trim();
+                if query.is_empty() {
+                    println!("usage: .explain <query>");
+                    continue;
+                }
+                match db.explain(query) {
+                    Ok(plan) => println!("{plan}"),
+                    Err(error) => println!("{error}"),
+                }
+            }
+            _ if input.starts_with(".inspect ") => {
+                let arg = input.trim_start_matches(".inspect ").trim();
+                match arg.parse::<u32>() {
+                    Ok(page_id) => match db.inspect_page(page_id) {
+                        Ok(report) => println!("{report}"),
+                        Err(error) => println!("{error}"),
+                    },
+                    Err(_) => println!("usage: .inspect <page_id>"),
+                }
+            }
+            _ if input.starts_with(".wal") => {
+                let arg = input.trim_start_matches(".wal").trim();
+                let limit = if arg.is_empty() {
+                    None
+                } else {
+                    match arg.parse::<usize>() {
+                        Ok(n) => Some(n),
+                        Err(_) => {
+                            println!("usage: .wal [limit]");
+                            continue;
+                        }
+                    }
+                };
+                match db.inspect_wal(limit) {
+                    Ok(entries) => {
+                        if entries.is_empty() {
+                            println!("(empty WAL)");
+                        }
+                        for entry in &entries {
+                            println!("{entry}");
+                        }
+                    }
+                    Err(error) => println!("{error}"),
+                }
+            }
+            ".stats" => match db.stats() {
+                Ok(stats) => println!("{stats}"),
+                Err(error) => println!("{error}"),
+            },
+            ".check" => {
+                let mut problems = Vec::new();
+                match db.check_integrity() {
+                    Ok(found) => problems.extend(found),
+                    Err(error) => println!("{error}"),
+                }
+                match db.check_index_consistency() {
+                    Ok(found) => problems.extend(found),
+                    Err(error) => println!("{error}"),
+                }
+                if problems.is_empty() {
+                    println!("OK: storage and indexes are consistent");
+                } else {
+                    for problem in &problems {
+                        println!("- {problem}");
+                    }
+                }
+            }
+            _ => match db.execute_timed(input) {
+                Ok((result, metrics)) => {
+                    println!("{result}");
+                    println!("{metrics}");
+                }
                 Err(error) => println!("{error}"),
             },
         }
@@ -143,6 +214,11 @@ fn print_repl_help(topic: Option<&str>) {
             println!("  .help path         Show database path usage");
             println!("  .open <path>       Open another database directory");
             println!("  .status            Print the current database path");
+            println!("  .explain <query>   Print the query plan without running it");
+            println!("  .stats             Print database statistics");
+            println!("  .check             Run storage and index consistency checks");
+            println!("  .inspect <page>    Dump a byte-level page report");
+            println!("  .wal [limit]       List WAL entries, oldest first (recent N with limit)");
             println!("  .quit              Exit the CLI");
             println!("  .exit              Exit the CLI");
         }

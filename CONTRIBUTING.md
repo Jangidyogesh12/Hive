@@ -2,6 +2,8 @@
 
 Thanks for helping improve Hive. This project is pre-`v0.1.0`, so APIs and storage details can still change.
 
+Start with `HIVE.md` — the contributor reference covering every feature, how it is implemented, and where the code lives — plus `docs/architecture.md`, `docs/cypher.md`, and `docs/storage.md` for the big picture, query language, and on-disk format.
+
 ## Development Setup
 
 Install the stable Rust toolchain with `rustfmt` and `clippy`.
@@ -15,13 +17,14 @@ cargo test --workspace
 cargo doc --workspace --no-deps
 ```
 
-For normal development, run `cargo test --workspace`. The engine integration tests live in `testing/core` under the `hive_core_testing` crate.
+For normal development, run `cargo test --workspace`. The engine integration tests live in `testing/rust/core` under the `hive_core_testing` crate.
 
 ## Before Opening A PR
 
 - Keep changes focused and minimal.
 - Add or update tests for behavior changes.
 - Update docs when public behavior, commands, query syntax, or storage format changes.
+- When adding or changing a feature, update its section in `HIVE.md` (what it does, how it is implemented, where the code lives, with a short code excerpt) so the contributor reference stays current.
 - Run formatting, clippy, and tests locally.
 - Do not commit generated database directories such as `.hive/`.
 

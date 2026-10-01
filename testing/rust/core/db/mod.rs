@@ -23,4 +23,8 @@ mod label_test;
 mod long_string_test;
 
 #[cfg(test)]
+mod concurrency_test;
+#[cfg(test)]
 mod freelist_test;
+#[cfg(test)]
+mod inspect_test;

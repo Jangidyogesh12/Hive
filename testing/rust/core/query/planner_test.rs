@@ -364,7 +364,7 @@ fn plan_merge_node() {
     let p = plan_query(r#"MERGE (n:Person {name: "Alice"})"#);
     match p {
         QueryPlan::Sequence(steps) => match &steps[0] {
-            QueryPlan::MergeNode { variable, node } => {
+            QueryPlan::MergeNode { variable, node, .. } => {
                 assert_eq!(variable.as_deref(), Some("n"));
                 assert_eq!(node.label.as_deref(), Some("Person"));
                 assert_eq!(node.properties.len(), 1);
@@ -376,12 +376,17 @@ fn plan_merge_node() {
 }
 
 #[test]
-fn plan_merge_path_rejects() {
-    let err = plan_query_err(r#"MERGE (a)-[:KNOWS]->(b)"#);
-    assert!(
-        err.contains("only single node patterns"),
-        "unexpected error: {err}"
-    );
+fn plan_merge_path_plans_relationship() {
+    let p = plan_query(r#"MERGE (a)-[:KNOWS]->(b)"#);
+    match p {
+        QueryPlan::Sequence(steps) => match &steps[0] {
+            QueryPlan::MergeRelationship { rel_type, .. } => {
+                assert_eq!(rel_type, "KNOWS");
+            }
+            other => panic!("expected MergeRelationship, got {other:?}"),
+        },
+        other => panic!("expected Sequence, got {other:?}"),
+    }
 }
 
 // ---------- RETURN ----------
@@ -530,15 +535,31 @@ fn plan_index_hint_full_scan() {
 // ---------- VARIABLE-LENGTH TRAVERSAL ----------
 
 #[test]
-fn plan_variable_length_traversal_rejects() {
-    let err = plan_query_err(r#"MATCH (a)-[*1..3]->(b) RETURN a, b"#);
-    assert!(err.contains("variable-length"), "unexpected error: {err}");
+fn plan_variable_length_traversal_plans_hops() {
+    let p = plan_query(r#"MATCH (a)-[*1..3]->(b) RETURN a, b"#);
+    match p {
+        QueryPlan::Sequence(steps) => match &steps[1] {
+            QueryPlan::TraverseEdges { hops, .. } => {
+                assert!(hops.is_some(), "expected variable-length hops");
+            }
+            other => panic!("expected TraverseEdges, got {other:?}"),
+        },
+        other => panic!("expected Sequence, got {other:?}"),
+    }
 }
 
 #[test]
-fn plan_unbounded_traversal_rejects() {
-    let err = plan_query_err(r#"MATCH (a)-[*]->(b) RETURN a, b"#);
-    assert!(err.contains("variable-length"), "unexpected error: {err}");
+fn plan_unbounded_traversal_plans_hops() {
+    let p = plan_query(r#"MATCH (a)-[*]->(b) RETURN a, b"#);
+    match p {
+        QueryPlan::Sequence(steps) => match &steps[1] {
+            QueryPlan::TraverseEdges { hops, .. } => {
+                assert!(hops.is_some(), "expected unbounded hops");
+            }
+            other => panic!("expected TraverseEdges, got {other:?}"),
+        },
+        other => panic!("expected Sequence, got {other:?}"),
+    }
 }
 
 // ---------- COMPLEX PIPELINES ----------

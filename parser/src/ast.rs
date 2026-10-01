@@ -20,14 +20,24 @@ pub enum Clause {
     Create(Pattern),
     /// `MATCH ...` graph pattern binding.
     Match(MatchClause),
+    /// `OPTIONAL MATCH ...` row-preserving outer-join binding.
+    OptionalMatch(MatchClause),
     /// `WHERE ...` filter expression applied to the current row stream.
     Where(Expression),
     /// `SET n.key = expr` property mutation.
     Set(SetClause),
     /// `DELETE n` or `DETACH DELETE n` entity deletion.
     Delete(DeleteClause),
+    /// `REMOVE n:Label` or `REMOVE n.property` label/property removal.
+    Remove(RemoveClause),
     /// `MERGE ...` match-or-create pattern.
     Merge(Pattern),
+    /// `ON CREATE SET n.key = expr` applied when MERGE creates.
+    OnCreate(SetClause),
+    /// `ON MATCH SET n.key = expr` applied when MERGE matches.
+    OnMatch(SetClause),
+    /// `WITH ...` projection that replaces the row scope.
+    With(ReturnClause),
     /// `RETURN ...` projection, ordering, and row slicing.
     Return(ReturnClause),
 }
@@ -57,6 +67,24 @@ pub struct DeleteClause {
     pub variables: Vec<String>,
     /// Whether incident relationships should be deleted before deleting nodes.
     pub detach: bool,
+}
+
+/// One `REMOVE` item: either a label removal (`n:Label`) or a property removal (`n.prop`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoveItem {
+    /// Bound variable whose label or property should be removed.
+    pub variable: String,
+    /// Label to remove when `Some`, e.g. `REMOVE n:Person`.
+    pub label: Option<String>,
+    /// Property to remove when `Some`, e.g. `REMOVE n.name`.
+    pub property: Option<String>,
+}
+
+/// Data carried by a `REMOVE` clause.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoveClause {
+    /// Items to remove, from syntax like `REMOVE n:Person, m.age`.
+    pub items: Vec<RemoveItem>,
 }
 
 /// A graph pattern can be a single node or a path with relationships.
@@ -93,8 +121,22 @@ pub struct NodePattern {
     pub variable: Option<String>,
     /// Optional label name, for example `Person` in `(n:Person)`.
     pub label: Option<String>,
+    /// Additional labels from `(n:A:B:C)` syntax. Empty in the common case.
+    pub extra_labels: Vec<String>,
     /// Inline property predicates or create values from `{key: expr}`.
     pub properties: HashMap<String, Expression>,
+}
+
+impl NodePattern {
+    /// All labels on this pattern, primary first.
+    pub fn all_labels(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(label) = &self.label {
+            out.push(label.clone());
+        }
+        out.extend(self.extra_labels.iter().cloned());
+        out
+    }
 }
 
 /// Parsed relationship pattern.
@@ -157,6 +199,8 @@ pub struct ReturnItem {
 /// Expression tree used by filters, properties, return items, and sort keys.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expression {
+    /// Null literal from `NULL`.
+    Null,
     /// Integer literal, for example `30`.
     Integer(i64),
     /// Floating-point literal, for example `3.14`.
@@ -165,6 +209,22 @@ pub enum Expression {
     String(String),
     /// Boolean literal: `true` or `false`.
     Boolean(bool),
+    /// Query parameter from `$name`. Bound via `execute_with_params`.
+    Param(String),
+    /// `COUNT(expr)` or `COUNT(*)` aggregation.
+    Count(Box<CountTarget>),
+    /// `SUM(expr)` aggregation: integers sum to `Integer`, any float widens
+    /// to `Float`; `NULL`s are skipped, empty/all-`NULL` groups yield `NULL`.
+    Sum(Box<Expression>),
+    /// `AVG(expr)` aggregation: always yields `Float`; `NULL`s are skipped,
+    /// empty/all-`NULL` groups yield `NULL`.
+    Avg(Box<Expression>),
+    /// `MIN(expr)` aggregation over numbers or strings (not mixed);
+    /// `NULL`s are skipped, empty/all-`NULL` groups yield `NULL`.
+    Min(Box<Expression>),
+    /// `MAX(expr)` aggregation over numbers or strings (not mixed);
+    /// `NULL`s are skipped, empty/all-`NULL` groups yield `NULL`.
+    Max(Box<Expression>),
     /// Variable reference, for example `n`.
     Variable(String),
     /// Property access, for example `n.name`.
@@ -227,4 +287,13 @@ pub struct RelationshipLength {
     pub min_hops: Option<u32>,
     /// Maximum hops. `None` means unbounded from the upper side.
     pub max_hops: Option<u32>,
+}
+
+/// Target of a `COUNT(...)` aggregation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CountTarget {
+    /// `COUNT(*)` counts all input rows.
+    Star,
+    /// `COUNT(expr)` counts rows where `expr` is not null.
+    Expr(Box<Expression>),
 }

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crate::errors::DbError;
 use crate::query::ast::{
     BinaryOp, Clause, Direction, Expression, MatchClause, NodePattern, PathPattern, Pattern,
-    RelationshipLength, ReturnClause, SetClause, Statement,
+    RelationshipLength, RemoveClause, ReturnClause, SetClause, Statement,
 };
 use crate::query::utils::expression_to_literal;
 use crate::value::Value;
@@ -17,6 +17,17 @@ pub enum QueryPlan {
     MergeNode {
         variable: Option<String>,
         node: NodePattern,
+        on_create: Vec<SetClause>,
+        on_match: Vec<SetClause>,
+    },
+    MergeRelationship {
+        src: NodePattern,
+        dst: NodePattern,
+        rel_type: String,
+        rel_var: Option<String>,
+        properties: Vec<(String, Expression)>,
+        on_create: Vec<SetClause>,
+        on_match: Vec<SetClause>,
     },
     CreateRelationship {
         src: NodePattern,
@@ -27,8 +38,10 @@ pub enum QueryPlan {
     ScanNodes {
         variable: String,
         label: Option<String>,
+        extra_labels: Vec<String>,
         filter: Option<Expression>,
         index_hint: NodeIndexHint,
+        optional: bool,
     },
     TraverseEdges {
         from_var: String,
@@ -36,18 +49,22 @@ pub enum QueryPlan {
         direction: Direction,
         to_var: String,
         to_label: Option<String>,
+        to_extra_labels: Vec<String>,
         hops: Option<RelationshipLength>,
         edge_var: Option<String>,
         edge_filter: Option<Expression>,
+        optional: bool,
     },
     Filter {
         condition: Expression,
     },
+    With(ReturnClause),
     Return(ReturnClause),
     Delete {
         variables: Vec<String>,
         detach: bool,
     },
+    Remove(RemoveClause),
     SetProperty {
         variable: String,
         key: String,
@@ -74,17 +91,20 @@ pub enum NodeIndexHint {
 }
 
 impl QueryPlan {
-    /// Returns `true` if this plan step performs no mutations (no CREATE, MERGE, SET, DELETE).
+    /// Returns `true` if this plan step performs no mutations (no CREATE, MERGE, SET, DELETE, REMOVE).
     pub fn is_read_only(&self) -> bool {
         match self {
             QueryPlan::ScanNodes { .. }
             | QueryPlan::TraverseEdges { .. }
             | QueryPlan::Filter { .. }
+            | QueryPlan::With(_)
             | QueryPlan::Return(_) => true,
             QueryPlan::CreateNode { .. }
             | QueryPlan::CreateRelationship { .. }
             | QueryPlan::MergeNode { .. }
+            | QueryPlan::MergeRelationship { .. }
             | QueryPlan::Delete { .. }
+            | QueryPlan::Remove(_)
             | QueryPlan::SetProperty { .. } => false,
             QueryPlan::Sequence(steps) => steps.iter().all(|s| s.is_read_only()),
         }
@@ -95,11 +115,43 @@ pub fn plan(stmt: Statement) -> Result<QueryPlan, DbError> {
     let mut steps = Vec::new();
     let mut scope = HashSet::new();
 
-    for clause in stmt.clauses {
+    let mut clauses = stmt.clauses.into_iter().peekable();
+    while let Some(clause) = clauses.next() {
         match clause {
             Clause::Create(pattern) => plan_create(pattern, &mut steps, &mut scope)?,
-            Clause::Merge(pattern) => plan_merge(pattern, &mut steps, &mut scope)?,
-            Clause::Match(match_clause) => plan_match(match_clause, &mut steps, &mut scope)?,
+            Clause::Merge(pattern) => {
+                // Collect trailing ON CREATE SET / ON MATCH SET actions.
+                let mut on_create = Vec::new();
+                let mut on_match = Vec::new();
+                while let Some(peeked) = clauses.peek() {
+                    match peeked {
+                        Clause::OnCreate(_) | Clause::OnMatch(_) => match clauses.next() {
+                            Some(Clause::OnCreate(s)) => {
+                                validate_expression_scope(&s.value, &scope)?;
+                                // ON CREATE may reference the merge variable; allow it.
+                                if let Some(_v) = None::<String> {}
+                                on_create.push(s);
+                            }
+                            Some(Clause::OnMatch(s)) => {
+                                validate_expression_scope(&s.value, &scope)?;
+                                on_match.push(s);
+                            }
+                            _ => unreachable!(),
+                        },
+                        _ => break,
+                    }
+                }
+                plan_merge(pattern, on_create, on_match, &mut steps, &mut scope)?;
+            }
+            Clause::OnCreate(_) | Clause::OnMatch(_) => {
+                return Err(DbError::QueryError(
+                    "ON CREATE SET / ON MATCH SET must follow MERGE".to_string(),
+                ));
+            }
+            Clause::Match(match_clause) => plan_match(match_clause, false, &mut steps, &mut scope)?,
+            Clause::OptionalMatch(match_clause) => {
+                plan_match(match_clause, true, &mut steps, &mut scope)?
+            }
             Clause::Where(condition) => {
                 validate_expression_scope(&condition, &scope)?;
                 steps.push(QueryPlan::Filter { condition });
@@ -119,6 +171,36 @@ pub fn plan(stmt: Statement) -> Result<QueryPlan, DbError> {
                     detach: delete_clause.detach,
                 });
             }
+            Clause::Remove(remove_clause) => {
+                for item in &remove_clause.items {
+                    if !scope.contains(&item.variable) {
+                        return Err(DbError::QueryError(format!(
+                            "REMOVE references unknown variable `{}`",
+                            item.variable
+                        )));
+                    }
+                }
+                steps.push(QueryPlan::Remove(remove_clause));
+            }
+            Clause::With(with_clause) => {
+                for item in &with_clause.items {
+                    validate_expression_scope(&item.expression, &scope)?;
+                }
+                for item in &with_clause.order_by {
+                    validate_expression_scope(&item.expression, &scope)?;
+                }
+                // WITH replaces the visible scope with its projected aliases.
+                let mut next_scope = HashSet::new();
+                for item in &with_clause.items {
+                    let name = item
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| with_item_name(&item.expression));
+                    next_scope.insert(name);
+                }
+                steps.push(QueryPlan::With(with_clause));
+                scope = next_scope;
+            }
             Clause::Return(return_clause) => {
                 for item in &return_clause.items {
                     validate_expression_scope(&item.expression, &scope)?;
@@ -132,6 +214,19 @@ pub fn plan(stmt: Statement) -> Result<QueryPlan, DbError> {
     }
 
     Ok(QueryPlan::Sequence(steps))
+}
+
+fn with_item_name(expr: &Expression) -> String {
+    match expr {
+        Expression::Variable(v) => v.clone(),
+        Expression::Property { variable, property } => format!("{}.{}", variable, property),
+        Expression::Count(_) => "count".to_string(),
+        Expression::Sum(_) => "sum".to_string(),
+        Expression::Avg(_) => "avg".to_string(),
+        Expression::Min(_) => "min".to_string(),
+        Expression::Max(_) => "max".to_string(),
+        _ => "expr".to_string(),
+    }
 }
 
 fn plan_create(
@@ -190,28 +285,94 @@ fn plan_create(
 
 fn plan_merge(
     input: Pattern,
+    on_create: Vec<SetClause>,
+    on_match: Vec<SetClause>,
     steps: &mut Vec<QueryPlan>,
     scope: &mut HashSet<String>,
 ) -> Result<(), DbError> {
+    // Validate ON CREATE / ON MATCH actions reference known variables
+    // (the merge variable itself is added to scope first below).
     match input {
         Pattern::Node(node) => {
             if let Some(variable) = &node.variable {
                 scope.insert(variable.clone());
             }
+            for action in on_create.iter().chain(on_match.iter()) {
+                if !scope.contains(&action.variable) {
+                    return Err(DbError::QueryError(format!(
+                        "ON CREATE/MATCH SET references unknown variable `{}`",
+                        action.variable
+                    )));
+                }
+                validate_expression_scope(&action.value, scope)?;
+            }
             steps.push(QueryPlan::MergeNode {
                 variable: node.variable.clone(),
                 node,
+                on_create,
+                on_match,
             });
             Ok(())
         }
-        Pattern::Path(_) => Err(DbError::QueryError(
-            "MERGE currently supports only single node patterns".to_string(),
-        )),
+        Pattern::Path(path) => {
+            if path.segments.len() != 1 {
+                return Err(DbError::QueryError(
+                    "MERGE currently supports at most one relationship segment".to_string(),
+                ));
+            }
+            let seg = &path.segments[0];
+            let rel_type = seg
+                .relationship
+                .rel_type
+                .clone()
+                .ok_or(DbError::QueryError(
+                    "MERGE relationship requires a type".to_string(),
+                ))?;
+            if seg.relationship.hops.is_some() {
+                return Err(DbError::QueryError(
+                    "MERGE does not support variable-length relationships".to_string(),
+                ));
+            }
+            if let Some(v) = &path.start.variable {
+                scope.insert(v.clone());
+            }
+            if let Some(v) = &seg.relationship.variable {
+                scope.insert(v.clone());
+            }
+            if let Some(v) = &seg.node.variable {
+                scope.insert(v.clone());
+            }
+            for action in on_create.iter().chain(on_match.iter()) {
+                if !scope.contains(&action.variable) {
+                    return Err(DbError::QueryError(format!(
+                        "ON CREATE/MATCH SET references unknown variable `{}`",
+                        action.variable
+                    )));
+                }
+                validate_expression_scope(&action.value, scope)?;
+            }
+            steps.push(QueryPlan::MergeRelationship {
+                src: path.start.clone(),
+                dst: seg.node.clone(),
+                rel_type,
+                rel_var: seg.relationship.variable.clone(),
+                properties: seg
+                    .relationship
+                    .properties
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+                on_create,
+                on_match,
+            });
+            Ok(())
+        }
     }
 }
 
 fn plan_match(
     clause: MatchClause,
+    optional: bool,
     steps: &mut Vec<QueryPlan>,
     scope: &mut HashSet<String>,
 ) -> Result<(), DbError> {
@@ -224,8 +385,10 @@ fn plan_match(
             steps.push(QueryPlan::ScanNodes {
                 variable: variable.clone(),
                 label: node.label.clone(),
+                extra_labels: node.extra_labels.clone(),
                 index_hint: node_index_hint(&variable, &node.label, &filter),
                 filter,
+                optional,
             });
             scope.insert(variable);
         }
@@ -234,21 +397,22 @@ fn plan_match(
                 "MATCH path start node requires a variable".to_string(),
             ))?;
             let start_filter = node_property_filter(&start_variable, &start.properties);
+            // First scan is optional only when the whole OPTIONAL MATCH has a
+            // single node pattern; for paths, the start is required and each
+            // traversal step preserves rows.
+            let first_optional = optional && segments.is_empty();
             steps.push(QueryPlan::ScanNodes {
                 variable: start_variable.clone(),
                 label: start.label.clone(),
+                extra_labels: start.extra_labels.clone(),
                 index_hint: node_index_hint(&start_variable, &start.label, &start_filter),
                 filter: start_filter,
+                optional: first_optional,
             });
             scope.insert(start_variable.clone());
 
             let mut from_var = start_variable;
             for seg in segments {
-                if seg.relationship.hops.is_some() {
-                    return Err(DbError::QueryError(
-                        "variable-length relationship execution is not implemented".to_string(),
-                    ));
-                }
                 let to_var = seg.node.variable.clone().ok_or(DbError::QueryError(
                     "MATCH path destination node requires a variable".to_string(),
                 ))?;
@@ -259,12 +423,14 @@ fn plan_match(
                     direction: seg.relationship.direction.clone(),
                     to_var: to_var.clone(),
                     to_label: seg.node.label.clone(),
+                    to_extra_labels: seg.node.extra_labels.clone(),
                     hops: seg.relationship.hops.clone(),
                     edge_var: edge_var.clone(),
                     edge_filter: edge_property_filter(
                         edge_var.as_deref(),
                         &seg.relationship.properties,
                     ),
+                    optional,
                 });
                 scope.insert(to_var.clone());
                 if let Some(edge_var) = edge_var {
@@ -273,6 +439,9 @@ fn plan_match(
                 if let Some(filter) = node_property_filter(&to_var, &seg.node.properties) {
                     steps.push(QueryPlan::Filter { condition: filter });
                 }
+                // Extra labels on path destination nodes: enforce via filter on
+                // label membership is handled in the executor; planner only
+                // needs scope tracking here.
                 from_var = to_var;
             }
         }
@@ -384,6 +553,14 @@ fn validate_expression_scope(expr: &Expression, scope: &HashSet<String>) -> Resu
                 variable
             )))
         }
+        Expression::Count(target) => match &**target {
+            crate::query::ast::CountTarget::Star => Ok(()),
+            crate::query::ast::CountTarget::Expr(inner) => validate_expression_scope(inner, scope),
+        },
+        Expression::Sum(inner)
+        | Expression::Avg(inner)
+        | Expression::Min(inner)
+        | Expression::Max(inner) => validate_expression_scope(inner, scope),
         Expression::BinaryOp { left, right, .. } => {
             validate_expression_scope(left, scope)?;
             validate_expression_scope(right, scope)

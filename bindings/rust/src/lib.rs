@@ -18,7 +18,8 @@
 
 pub use hive_core::*;
 
-pub use hive_core::db::hive_db::HiveDb;
+pub use hive_core::db::hive_db::{HiveDb, QueryMetrics};
+pub use hive_core::db::shared::SharedDb;
 pub use hive_core::errors::DbError;
 pub use hive_core::transaction::Transaction;
 pub use hive_core::types::{EdgeId, NodeId, PropertyId};
@@ -26,7 +27,8 @@ pub use hive_core::value::Value;
 
 /// Common imports for applications embedding Hive.
 pub mod prelude {
-    pub use hive_core::db::hive_db::HiveDb;
+    pub use hive_core::db::hive_db::{HiveDb, QueryMetrics};
+    pub use hive_core::db::shared::SharedDb;
     pub use hive_core::errors::DbError;
     pub use hive_core::transaction::Transaction;
     pub use hive_core::types::{EdgeId, NodeId, PropertyId};

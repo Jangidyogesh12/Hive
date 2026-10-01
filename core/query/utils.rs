@@ -4,6 +4,7 @@ use crate::{errors::DbError, query::ast::Expression, value::Value};
 /// Returns an error for non-literal expressions.
 pub fn expression_to_literal(expr: &Expression) -> Result<Value, DbError> {
     match expr {
+        Expression::Null => Ok(Value::Null),
         Expression::Integer(n) => Ok(Value::Integer(*n)),
         Expression::Float(f) => Ok(Value::Float(*f)),
         Expression::String(s) => Ok(Value::String(s.clone())),

@@ -177,6 +177,16 @@ impl<'a> Lexer<'a> {
             "ASC" => TokenType::Asc,
             "DESC" => TokenType::Desc,
             "DETACH" => TokenType::Detach,
+            "WITH" => TokenType::With,
+            "OPTIONAL" => TokenType::Optional,
+            "REMOVE" => TokenType::Remove,
+            "NULL" => TokenType::Null,
+            "ON" => TokenType::On,
+            "COUNT" => TokenType::Count,
+            "SUM" => TokenType::Sum,
+            "AVG" => TokenType::Avg,
+            "MIN" => TokenType::Min,
+            "MAX" => TokenType::Max,
             _ => TokenType::Identifier(text.to_string()),
         };
 
@@ -368,6 +378,14 @@ impl<'a> Lexer<'a> {
                 self.advance();
                 Ok(Token {
                     kind: TokenType::Star,
+                    span: Span::new(start, self.pos),
+                    text: &self.input[start..self.pos],
+                })
+            }
+            '$' => {
+                self.advance();
+                Ok(Token {
+                    kind: TokenType::Dollar,
                     span: Span::new(start, self.pos),
                     text: &self.input[start..self.pos],
                 })

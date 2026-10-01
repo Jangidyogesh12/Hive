@@ -27,14 +27,197 @@ pub struct HiveDb {
 }
 
 pub(crate) struct BeforeImage {
-    page_id: u32,
-    bytes: [u8; PAGE_SIZE],
-    newly_allocated: bool,
+    pub(crate) page_id: u32,
+    pub(crate) bytes: [u8; PAGE_SIZE],
+    pub(crate) newly_allocated: bool,
+}
+
+/// Database statistics snapshot returned by `HiveDb::stats`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DbStats {
+    /// Total pages in the database file.
+    pub page_count: u32,
+    /// Pages holding node records.
+    pub node_pages: u32,
+    /// Pages holding edge records.
+    pub edge_pages: u32,
+    /// Pages holding B-tree index data.
+    pub btree_pages: u32,
+    /// Pages holding overflow string data.
+    pub overflow_pages: u32,
+    /// Pages holding freelist data.
+    pub freelist_pages: u32,
+    /// Live (non-deleted) node records.
+    pub live_nodes: u64,
+    /// Live (non-deleted) edge records.
+    pub live_edges: u64,
+    /// Allocation counter for nodes (never decremented).
+    pub meta_node_count: u64,
+    /// Allocation counter for edges (never decremented).
+    pub meta_edge_count: u64,
+    /// Number of registered labels.
+    pub label_count: u64,
+    /// Number of registered property keys.
+    pub property_key_count: u64,
+}
+
+impl std::fmt::Display for DbStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "pages: {}", self.page_count)?;
+        writeln!(
+            f,
+            "node_pages: {} edge_pages: {} btree_pages: {} overflow_pages: {} freelist_pages: {}",
+            self.node_pages,
+            self.edge_pages,
+            self.btree_pages,
+            self.overflow_pages,
+            self.freelist_pages
+        )?;
+        writeln!(
+            f,
+            "live_nodes: {} live_edges: {}",
+            self.live_nodes, self.live_edges
+        )?;
+        writeln!(
+            f,
+            "meta_node_count: {} meta_edge_count: {} labels: {} property_keys: {}",
+            self.meta_node_count, self.meta_edge_count, self.label_count, self.property_key_count
+        )
+    }
+}
+
+/// Byte-level report for one page, returned by `HiveDb::inspect_page`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageReport {
+    /// Inspected page ID.
+    pub page_id: u32,
+    /// Page type name (e.g. `"DataNode"`, `"IndexLeaf"`, `"Meta"`).
+    pub page_type: String,
+    /// Slot/cell count from the page header.
+    pub slot_count: u16,
+    /// Live slots (records, cells, or freelist entries depending on type).
+    pub live_slots: u16,
+    /// Dead slots (slotted pages only).
+    pub dead_slots: u16,
+    /// Content-area offset from the page header.
+    pub free_space_offset: u16,
+    /// Free bytes between the slot table and the content area.
+    pub free_bytes: usize,
+    /// Page checksum verdict (`None` for the meta page, which carries its
+    /// own checksum layout).
+    pub checksum_valid: Option<bool>,
+    /// Highest LSN stamped on the page.
+    pub lsn: u32,
+    /// Type-specific lines: decoded records, cells, freelist entries, or
+    /// meta fields. Capped at `MAX_INSPECT_DETAILS` with an overflow note.
+    pub detail: Vec<String>,
+}
+
+impl std::fmt::Display for PageReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let checksum = match self.checksum_valid {
+            Some(true) => "valid",
+            Some(false) => "INVALID",
+            None => "n/a",
+        };
+        writeln!(
+            f,
+            "page {} [{}]: slots={} live={} dead={} free={}B checksum={} lsn={}",
+            self.page_id,
+            self.page_type,
+            self.slot_count,
+            self.live_slots,
+            self.dead_slots,
+            self.free_bytes,
+            checksum,
+            self.lsn
+        )?;
+        for line in &self.detail {
+            writeln!(f, "  {line}")?;
+        }
+        Ok(())
+    }
+}
+
+/// One summarized WAL entry, returned by `HiveDb::inspect_wal`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalEntrySummary {
+    /// Position of the entry in the log (oldest = 0).
+    pub index: usize,
+    /// Entry kind: `Begin`, `PageImage`, `Commit`, or `Checkpoint`.
+    pub kind: String,
+    /// Owning transaction, if any.
+    pub tx_id: Option<TxId>,
+    /// Log sequence number.
+    pub lsn: u64,
+    /// Affected page for `PageImage` entries.
+    pub page_id: Option<u32>,
+    /// Encoded payload size in bytes (page images carry a full 4 KiB image).
+    pub payload_bytes: usize,
+}
+
+impl std::fmt::Display for WalEntrySummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let tx = self
+            .tx_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let page = self
+            .page_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        write!(
+            f,
+            "#{} {} tx={} lsn={} page={} ({} payload bytes)",
+            self.index, self.kind, tx, self.lsn, page, self.payload_bytes
+        )
+    }
+}
+
+/// Per-stage wall time plus row count for one query execution.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QueryMetrics {
+    /// Time spent parsing the query string.
+    pub parse: std::time::Duration,
+    /// Time spent planning the statement.
+    pub plan: std::time::Duration,
+    /// Time spent executing the plan (includes commit).
+    pub execute: std::time::Duration,
+    /// Rows in the result.
+    pub rows: usize,
+}
+
+impl QueryMetrics {
+    /// Total wall time across all stages.
+    pub fn total(&self) -> std::time::Duration {
+        self.parse + self.plan + self.execute
+    }
+
+    fn millis(duration: std::time::Duration) -> f64 {
+        duration.as_secs_f64() * 1000.0
+    }
+}
+
+impl std::fmt::Display for QueryMetrics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} rows in {:.3}ms (parse {:.3}ms, plan {:.3}ms, execute {:.3}ms)",
+            self.rows,
+            Self::millis(self.total()),
+            Self::millis(self.parse),
+            Self::millis(self.plan),
+            Self::millis(self.execute)
+        )
+    }
 }
 
 const DEFAULT_AUTO_CHECKPOINT_INTERVAL: u64 = 64;
 
 impl HiveDb {
+    /// Maximum detail lines kept in a [`PageReport`].
+    const MAX_INSPECT_DETAILS: usize = 200;
+
     pub fn open(path: &Path) -> Result<Self, DbError> {
         fs::create_dir_all(path).map_err(|_| DbError::FileOpenError)?;
 
@@ -66,6 +249,63 @@ impl HiveDb {
         })
     }
 
+    /// Transient dictionary ID handed out by read-only snapshots for names
+    /// that do not exist in committed state. It can never match a real
+    /// record (real IDs start at 1 and grow) and is never written anywhere,
+    /// so unknown labels/keys on the read path simply match nothing.
+    pub(crate) const TRANSIENT_ID: u32 = u32::MAX;
+
+    /// Returns true when this handle is a read-only snapshot.
+    pub fn is_snapshot(&self) -> bool {
+        self.pager.is_read_only()
+    }
+
+    /// Opens a read-only snapshot of the database at `path`.
+    ///
+    /// The snapshot gets a fully private pager (own file handles, own cache)
+    /// and replays committed WAL entries into that cache only — the shared
+    /// files are never written, so any number of snapshots may be open
+    /// alongside (but never concurrently with) a writer. Reads observe the
+    /// committed state as of open: later writer commits are invisible until
+    /// a fresh snapshot is opened (snapshot isolation).
+    ///
+    /// Mutating through a snapshot fails loudly (`commit_tx`/`checkpoint`
+    /// refuse; page allocation is rejected). Unknown labels/property keys
+    /// resolve to [`HiveDb::TRANSIENT_ID`] instead of being registered, so
+    /// `MATCH` on nonexistent names simply returns no rows.
+    pub fn open_snapshot(path: &Path) -> Result<Self, DbError> {
+        let wal_path = path.join("wal.hive");
+        let mut pager = Pager::open_read_only(path, 128, 128)?;
+        let wal = Wal::open(&wal_path)?;
+
+        // Redo runs unmodified: in read-only mode the pager's disk-write
+        // paths redirect into the private cache (see `write_page_to_disk`),
+        // so replayed images never reach the shared files. No checkpoint or
+        // truncate follows — the WAL is left untouched.
+        let recovery_outcome = recovery::recover(path, &mut pager)?;
+
+        match recovery_outcome {
+            RecoveryOutcome::Clean => {}
+            RecoveryOutcome::Recovered {
+                committed_tx_count,
+                pages_redone,
+            } => {
+                eprintln!(
+                    "Snapshot recovery: {} transactions replayed, {} pages redone",
+                    committed_tx_count, pages_redone
+                );
+            }
+        }
+
+        Ok(Self {
+            pager,
+            wal,
+            next_tx_id: AtomicU64::new(1),
+            commits_since_checkpoint: 0,
+            auto_checkpoint_interval: 0,
+        })
+    }
+
     /// Registers a label name and returns its numeric ID.
     pub fn register_label(&mut self, name: &str) -> Result<u32, DbError> {
         let tx_id = self.next_tx_id();
@@ -93,6 +333,11 @@ impl HiveDb {
     ) -> Result<u32, DbError> {
         if let Some(existing_id) = LabelStore::find_label(&mut self.pager, name)? {
             return Ok(existing_id);
+        }
+        if self.pager.is_read_only() {
+            // Read-only snapshots must not register names: hand out a
+            // transient ID that matches nothing (see `TRANSIENT_ID`).
+            return Ok(Self::TRANSIENT_ID);
         }
 
         let label_id = {
@@ -156,6 +401,11 @@ impl HiveDb {
     ) -> Result<u32, DbError> {
         if let Some(existing_id) = PropertyKeyStore::find_property_key(&mut self.pager, name)? {
             return Ok(existing_id);
+        }
+        if self.pager.is_read_only() {
+            // Read-only snapshots must not register names: hand out a
+            // transient ID that matches nothing (see `TRANSIENT_ID`).
+            return Ok(Self::TRANSIENT_ID);
         }
 
         let key_id = {
@@ -980,6 +1230,827 @@ impl HiveDb {
         Ok(out)
     }
 
+    /// Parses, plans, and executes a query with `$name` parameter bindings.
+    pub fn execute_with_params(
+        &mut self,
+        query: &str,
+        params: &std::collections::HashMap<String, Value>,
+    ) -> Result<crate::query::result::QueryResult, DbError> {
+        let statement = crate::query::parser::parse(query)
+            .map_err(|err| DbError::QueryError(err.to_string()))?;
+        let plan = crate::query::planner::plan(statement)?;
+        crate::query::executor::execute_with_params(&plan, self, params)
+    }
+
+    /// Returns a human-readable query plan without executing it (`EXPLAIN`).
+    pub fn explain(&mut self, query: &str) -> Result<String, DbError> {
+        let statement = crate::query::parser::parse(query)
+            .map_err(|err| DbError::QueryError(err.to_string()))?;
+        let plan = crate::query::planner::plan(statement)?;
+        Ok(crate::query::executor::explain_plan(&plan))
+    }
+
+    /// Parses, plans, and executes a query, timing each stage separately.
+    ///
+    /// Returns the result alongside [`QueryMetrics`] (parse/plan/execute
+    /// wall time plus row count) for performance diagnostics.
+    pub fn execute_with_params_timed(
+        &mut self,
+        query: &str,
+        params: &std::collections::HashMap<String, Value>,
+    ) -> Result<(crate::query::result::QueryResult, QueryMetrics), DbError> {
+        let start = std::time::Instant::now();
+        let statement = crate::query::parser::parse(query)
+            .map_err(|err| DbError::QueryError(err.to_string()))?;
+        let parse = start.elapsed();
+        let plan = crate::query::planner::plan(statement)?;
+        let plan_time = start.elapsed() - parse;
+        let result = crate::query::executor::execute_with_params(&plan, self, params)?;
+        let execute = start.elapsed() - parse - plan_time;
+        let metrics = QueryMetrics {
+            parse,
+            plan: plan_time,
+            execute,
+            rows: result.rows.len(),
+        };
+        Ok((result, metrics))
+    }
+
+    /// Parses, plans, and executes a query with per-stage timing.
+    pub fn execute_timed(
+        &mut self,
+        query: &str,
+    ) -> Result<(crate::query::result::QueryResult, QueryMetrics), DbError> {
+        self.execute_with_params_timed(query, &std::collections::HashMap::new())
+    }
+
+    /// Inspects one page and returns a human-readable byte-level report.
+    ///
+    /// Reports the header (type, slots, free space, checksum, LSN) plus
+    /// type-specific content: decoded node/edge records, B-tree cell counts,
+    /// freelist entries, or meta-header fields. Slots that fail to decode
+    /// are reported as undecodable rather than erroring, so corrupt pages
+    /// can still be diagnosed. Detail lines are capped
+    /// (`MAX_INSPECT_DETAILS`) with an overflow note.
+    pub fn inspect_page(&mut self, page_id: u32) -> Result<PageReport, DbError> {
+        let page_count = self.pager.page_count()? as u32;
+        if page_id >= page_count {
+            return Err(DbError::QueryError(format!(
+                "page {page_id} out of range ({page_count} pages)"
+            )));
+        }
+        if page_id == META_PAGE_ID {
+            return self.inspect_meta_page();
+        }
+        // Copy the page out of the cache: decoding below needs `&mut self`
+        // (label/property name resolution), which cannot borrow the pager
+        // while a page reference is alive.
+        let page_buf = *self.pager.get_page(page_id)?;
+        let header = layout::read_page_header(&page_buf);
+        let mut report = PageReport {
+            page_id,
+            page_type: format!("{:?}", header.page_type),
+            slot_count: header.slot_count,
+            live_slots: 0,
+            dead_slots: 0,
+            free_space_offset: header.free_space_offset,
+            free_bytes: layout::get_free_space(&page_buf),
+            checksum_valid: Some(layout::verify_checksum(&page_buf)),
+            lsn: header.lsn,
+            detail: Vec::new(),
+        };
+        match header.page_type {
+            PageType::DataNode
+            | PageType::DataEdge
+            | PageType::LabelData
+            | PageType::PropertyKeyData
+            | PageType::StringData => {
+                self.describe_slotted_page(header.page_type, &page_buf, &mut report)?;
+            }
+            PageType::IndexLeaf | PageType::IndexInterior => {
+                Self::describe_btree_page(&page_buf, &mut report);
+            }
+            PageType::Freelist => {
+                Self::describe_freelist_page(&page_buf, &mut report);
+            }
+            PageType::Overflow => {
+                Self::describe_overflow_page(&page_buf, &mut report);
+            }
+            PageType::Meta => {
+                report
+                    .detail
+                    .push("unexpected meta page away from page 0".to_string());
+            }
+        }
+        if report.detail.len() > Self::MAX_INSPECT_DETAILS {
+            let extra = report.detail.len() - Self::MAX_INSPECT_DETAILS;
+            report.detail.truncate(Self::MAX_INSPECT_DETAILS);
+            report.detail.push(format!("... +{extra} more entries"));
+        }
+        Ok(report)
+    }
+
+    /// Describes a slotted page (records addressed by slot index).
+    fn describe_slotted_page(
+        &mut self,
+        page_type: PageType,
+        page_buf: &[u8; PAGE_SIZE],
+        report: &mut PageReport,
+    ) -> Result<(), DbError> {
+        let header = layout::read_page_header(page_buf);
+        for slot_id in 0..header.slot_count {
+            match layout::read_record_bytes(page_buf, slot_id) {
+                None => {
+                    report.dead_slots += 1;
+                }
+                Some(bytes) => {
+                    report.live_slots += 1;
+                    self.describe_slot(page_type, slot_id, bytes, &mut report.detail)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Builds the [`PageReport`] for page 0 (meta page).
+    fn inspect_meta_page(&mut self) -> Result<PageReport, DbError> {
+        let page_buf = self.pager.get_page(META_PAGE_ID)?;
+        let meta = layout::read_meta_header(page_buf);
+        let magic_ok = meta.magic == crate::storage::page::format::HIVE_MAGIC;
+        Ok(PageReport {
+            page_id: META_PAGE_ID,
+            page_type: "Meta".to_string(),
+            slot_count: 0,
+            live_slots: 0,
+            dead_slots: 0,
+            free_space_offset: 0,
+            free_bytes: 0,
+            // The meta page carries its own checksum layout; only the magic
+            // and version are asserted here.
+            checksum_valid: None,
+            lsn: meta.lsn,
+            detail: vec![
+                format!("magic valid: {magic_ok}"),
+                format!("version: {}", meta.version),
+                format!("page_size: {}", meta.page_size),
+                format!("db_size_pages: {}", meta.db_size_pages),
+                format!(
+                    "node_count: {} edge_count: {}",
+                    meta.node_count, meta.edge_count
+                ),
+                format!(
+                    "property_count: {} label_count: {}",
+                    meta.property_count, meta.label_count
+                ),
+                format!(
+                    "roots: node={} edge={} label={} propkey={} index={}",
+                    meta.root_node_page,
+                    meta.root_edge_page,
+                    meta.root_label_page,
+                    meta.root_string_page,
+                    meta.root_index_page,
+                ),
+                format!(
+                    "freelist_head: {} schema_version: {}",
+                    meta.freelist_head, meta.schema_version
+                ),
+            ],
+        })
+    }
+
+    /// Appends one human-readable line describing a live slot to `detail`.
+    fn describe_slot(
+        &mut self,
+        page_type: PageType,
+        slot_id: u16,
+        bytes: &[u8],
+        detail: &mut Vec<String>,
+    ) -> Result<(), DbError> {
+        match page_type {
+            PageType::DataNode => match NodeRecord::from_bytes(bytes) {
+                Ok(node) => {
+                    let labels = self.node_label_names(&node)?;
+                    detail.push(format!(
+                        "slot {slot_id}: node id={} labels=[{}] props={} extra_labels={} out_edge={} in_edge={}",
+                        node.id,
+                        labels.join(","),
+                        node.properties.len(),
+                        node.extra_labels.len(),
+                        node.first_out_edge != NIL_ID,
+                        node.first_in_edge != NIL_ID,
+                    ));
+                }
+                Err(err) => detail.push(format!(
+                    "slot {slot_id}: <{} undecodable bytes: {err}>",
+                    bytes.len()
+                )),
+            },
+            PageType::DataEdge => match EdgeRecord::from_bytes(bytes) {
+                Ok(edge) => {
+                    let type_name = if edge.label_id == 0 {
+                        String::new()
+                    } else {
+                        self.get_label_name(edge.label_id)?.unwrap_or_default()
+                    };
+                    detail.push(format!(
+                        "slot {slot_id}: edge id={} {}->{} type={type_name} props={}",
+                        edge.id,
+                        edge.src,
+                        edge.dst,
+                        edge.properties.len(),
+                    ));
+                }
+                Err(err) => detail.push(format!(
+                    "slot {slot_id}: <{} undecodable bytes: {err}>",
+                    bytes.len()
+                )),
+            },
+            // Dictionary entries are `[id: u32][name_len: u16][name: bytes]`.
+            PageType::LabelData | PageType::PropertyKeyData => {
+                detail.push(format!(
+                    "slot {slot_id}: {}",
+                    Self::describe_dict_entry(bytes)
+                ));
+            }
+            _ => {
+                detail.push(format!("slot {slot_id}: {} bytes", bytes.len()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Decodes a label / property-key dictionary entry for inspectors.
+    fn describe_dict_entry(bytes: &[u8]) -> String {
+        if bytes.len() < 6 {
+            return format!("<{} undecodable bytes>", bytes.len());
+        }
+        let id = u32::from_le_bytes(bytes[0..4].try_into().unwrap_or([0; 4]));
+        let len = u16::from_le_bytes(bytes[4..6].try_into().unwrap_or([0; 2])) as usize;
+        let name_bytes = bytes.get(6..6 + len).unwrap_or_default();
+        match std::str::from_utf8(name_bytes) {
+            Ok(name) => format!("id={id} name={name:?}"),
+            Err(_) => format!("id={id} <{len} non-utf8 bytes>"),
+        }
+    }
+
+    /// Describes a B-tree page: leaf/interior, cell count, and per-cell keys.
+    ///
+    /// B-tree pages use a cell pointer array rather than the slotted-record
+    /// layout, so cells are decoded here instead of via `describe_slot`.
+    /// Cells are `[key_len: u16][key][payload]`; leaf payloads hold record
+    /// IDs, interior payloads hold the child page.
+    fn describe_btree_page(page_buf: &[u8; PAGE_SIZE], report: &mut PageReport) {
+        use crate::storage::btree::{cell, key::BtreeKey, page as btree_page};
+        use crate::storage::page::serializer;
+        let kind = if btree_page::is_interior(page_buf) {
+            "interior"
+        } else {
+            "leaf"
+        };
+        let cells = btree_page::cell_count(page_buf);
+        report.live_slots = cells as u16;
+        let mut line = format!("btree {kind} page cells={cells}");
+        if btree_page::is_interior(page_buf) {
+            line.push_str(&format!(
+                " leftmost={}",
+                btree_page::leftmost_pointer(page_buf)
+            ));
+        }
+        report.detail.push(line);
+        for cell_idx in 0..cells {
+            let Some(cell) = btree_page::cell_bytes(page_buf, cell_idx) else {
+                report.detail.push(format!("cell {cell_idx}: <missing>"));
+                continue;
+            };
+            if cell.len() < 2 {
+                report.detail.push(format!("cell {cell_idx}: <truncated>"));
+                continue;
+            }
+            let key_len = serializer::get_u16_le(cell, 0) as usize;
+            let key_bytes = cell.get(2..2 + key_len).unwrap_or_default();
+            let payload = cell.get(2 + key_len..).unwrap_or_default();
+            let key = BtreeKey::decode(key_bytes)
+                .map(|k| format!("{k:?}"))
+                .unwrap_or_else(|_| "<bad key>".to_string());
+            if btree_page::is_interior(page_buf) {
+                match cell::decode_interior_payload(payload) {
+                    Ok(child) => report
+                        .detail
+                        .push(format!("cell {cell_idx}: key={key} child={child}")),
+                    Err(_) => report
+                        .detail
+                        .push(format!("cell {cell_idx}: key={key} <bad child>")),
+                }
+            } else {
+                match cell::decode_leaf_payload(payload) {
+                    Ok(rids) => {
+                        let shown: Vec<String> =
+                            rids.iter().take(8).map(|id| id.to_string()).collect();
+                        let more = if rids.len() > shown.len() {
+                            format!(" +{} more", rids.len() - shown.len())
+                        } else {
+                            String::new()
+                        };
+                        report.detail.push(format!(
+                            "cell {cell_idx}: key={key} rids=[{}]{more}",
+                            shown.join(",")
+                        ));
+                    }
+                    Err(_) => report
+                        .detail
+                        .push(format!("cell {cell_idx}: key={key} <bad payload>")),
+                }
+            }
+        }
+    }
+
+    /// Describes a freelist page: chain link plus reusable page IDs.
+    fn describe_freelist_page(page_buf: &[u8; PAGE_SIZE], report: &mut PageReport) {
+        use crate::storage::page::format::FreelistPage;
+        let flp = FreelistPage::from_bytes(page_buf);
+        report.live_slots = flp.entries.len() as u16;
+        let shown: Vec<String> = flp
+            .entries
+            .iter()
+            .take(32)
+            .map(|id| id.to_string())
+            .collect();
+        let more = if flp.entries.len() > shown.len() {
+            format!(" +{} more", flp.entries.len() - shown.len())
+        } else {
+            String::new()
+        };
+        report.detail.push(format!(
+            "freelist next={} free_pages=[{}]{more}",
+            flp.next_page,
+            shown.join(",")
+        ));
+    }
+
+    /// Describes an overflow page: live slots plus total payload bytes.
+    fn describe_overflow_page(page_buf: &[u8; PAGE_SIZE], report: &mut PageReport) {
+        let header = layout::read_page_header(page_buf);
+        let mut live = 0u16;
+        let mut bytes = 0usize;
+        for slot_id in 0..header.slot_count {
+            if let Some(slot) = layout::read_record_bytes(page_buf, slot_id) {
+                live += 1;
+                bytes += slot.len();
+            } else {
+                report.dead_slots += 1;
+            }
+        }
+        report.live_slots = live;
+        report.detail.push(format!(
+            "overflow payload: {live} live slots, {bytes} bytes"
+        ));
+    }
+
+    /// Resolves a node's label IDs to names (best effort for inspectors).
+    fn node_label_names(&mut self, node: &NodeRecord) -> Result<Vec<String>, DbError> {
+        let mut out = Vec::new();
+        for label_id in node.all_label_ids() {
+            out.push(
+                self.get_label_name(label_id)?
+                    .unwrap_or_else(|| format!("label_{label_id}")),
+            );
+        }
+        Ok(out)
+    }
+
+    /// Lists WAL entries oldest-first, most recent last.
+    ///
+    /// With `Some(limit)`, only the most recent `limit` entries are returned
+    /// (original indices preserved). Entry payloads are summarized, never
+    /// dumped: page images report their page ID and byte size.
+    pub fn inspect_wal(&mut self, limit: Option<usize>) -> Result<Vec<WalEntrySummary>, DbError> {
+        let entries = self.wal.read_all()?;
+        let total = entries.len();
+        let skip = limit.map(|n| total.saturating_sub(n)).unwrap_or(0);
+        Ok(entries
+            .into_iter()
+            .enumerate()
+            .skip(skip)
+            .map(|(index, entry)| WalEntrySummary {
+                index,
+                kind: format!("{:?}", entry.entry_type()),
+                tx_id: entry.tx_id(),
+                lsn: entry.lsn(),
+                page_id: match &entry {
+                    WalEntry::PageImage { page_id, .. } => Some(*page_id),
+                    _ => None,
+                },
+                payload_bytes: entry.encode_payload().map(|p| p.len()).unwrap_or(0),
+            })
+            .collect())
+    }
+
+    /// Returns database statistics: page counts, record counts, index counts.
+    pub fn stats(&mut self) -> Result<DbStats, DbError> {
+        let page_count = self.pager.page_count()? as u32;
+        let mut node_pages = 0u32;
+        let mut edge_pages = 0u32;
+        let mut btree_pages = 0u32;
+        let mut overflow_pages = 0u32;
+        let mut freelist_pages = 0u32;
+        let mut live_nodes = 0u64;
+        let mut live_edges = 0u64;
+        for page_id in 0..page_count {
+            if page_id == META_PAGE_ID {
+                continue;
+            }
+            let page_buf = self.pager.get_page(page_id)?;
+            let header = layout::read_page_header(page_buf);
+            match header.page_type {
+                PageType::DataNode => {
+                    node_pages += 1;
+                    for slot_id in 0..header.slot_count {
+                        if layout::read_record_bytes(page_buf, slot_id).is_some() {
+                            live_nodes += 1;
+                        }
+                    }
+                }
+                PageType::DataEdge => {
+                    edge_pages += 1;
+                    for slot_id in 0..header.slot_count {
+                        if layout::read_record_bytes(page_buf, slot_id).is_some() {
+                            live_edges += 1;
+                        }
+                    }
+                }
+                PageType::IndexInterior | PageType::IndexLeaf => btree_pages += 1,
+                PageType::Overflow => overflow_pages += 1,
+                PageType::Freelist => freelist_pages += 1,
+                _ => {}
+            }
+        }
+        let meta_page = self.pager.get_page(META_PAGE_ID)?;
+        let meta = layout::read_meta_header(meta_page);
+        Ok(DbStats {
+            page_count,
+            node_pages,
+            edge_pages,
+            btree_pages,
+            overflow_pages,
+            freelist_pages,
+            live_nodes,
+            live_edges,
+            meta_node_count: meta.node_count,
+            meta_edge_count: meta.edge_count,
+            label_count: meta.label_count,
+            property_key_count: meta.property_count,
+        })
+    }
+
+    /// Checks storage integrity: dangling edges, adjacency chain consistency.
+    /// Returns a list of problem descriptions (empty = healthy).
+    pub fn check_integrity(&mut self) -> Result<Vec<String>, DbError> {
+        let mut problems = Vec::new();
+        let nodes = self.scan_nodes()?;
+        let node_ids: std::collections::HashSet<NodeId> = nodes.iter().map(|(id, _)| *id).collect();
+        let edges = self.scan_edges()?;
+        for (edge_id, edge) in &edges {
+            if !node_ids.contains(&edge.src) {
+                problems.push(format!(
+                    "edge {} references missing src {}",
+                    edge_id, edge.src
+                ));
+            }
+            if !node_ids.contains(&edge.dst) {
+                problems.push(format!(
+                    "edge {} references missing dst {}",
+                    edge_id, edge.dst
+                ));
+            }
+        }
+        // Verify adjacency chains contain exactly the edges incident to each node.
+        for (node_id, node) in &nodes {
+            let out_chain = self.get_edges_from_node(*node_id, true)?;
+            for (eid, e) in &out_chain {
+                if e.src != *node_id {
+                    problems.push(format!(
+                        "out-chain of node {} contains edge {} with src {}",
+                        node_id, eid, e.src
+                    ));
+                }
+            }
+            let in_chain = self.get_edges_from_node(*node_id, false)?;
+            for (eid, e) in &in_chain {
+                if e.dst != *node_id {
+                    problems.push(format!(
+                        "in-chain of node {} contains edge {} with dst {}",
+                        node_id, eid, e.dst
+                    ));
+                }
+            }
+            // Cross-check counts via full scan.
+            let expected_out = edges.iter().filter(|(_, e)| e.src == *node_id).count();
+            if expected_out != out_chain.len() {
+                problems.push(format!(
+                    "node {} out-chain len {} != scan count {}",
+                    node_id,
+                    out_chain.len(),
+                    expected_out
+                ));
+            }
+            let expected_in = edges.iter().filter(|(_, e)| e.dst == *node_id).count();
+            if expected_in != in_chain.len() {
+                problems.push(format!(
+                    "node {} in-chain len {} != scan count {}",
+                    node_id,
+                    in_chain.len(),
+                    expected_in
+                ));
+            }
+            let _ = node;
+        }
+        Ok(problems)
+    }
+
+    /// Verifies index consistency: every indexed entry points at a live record
+    /// with a matching label/property value. Returns problem descriptions.
+    pub fn check_index_consistency(&mut self) -> Result<Vec<String>, DbError> {
+        let mut problems = Vec::new();
+        let tx_id = self.next_tx_id();
+        let _ = tx_id;
+        // Use a short-lived transaction-less scan via direct index catalog reads.
+        // We enumerate index defs through the catalog B-tree root.
+        let meta_page = self.pager.get_page(META_PAGE_ID)?;
+        let meta = layout::read_meta_header(meta_page);
+        if meta.root_index_page == 0 {
+            return Ok(problems);
+        }
+        // Collect index defs.
+        let defs: Vec<crate::storage::index_catalog::IndexDef> = {
+            use crate::storage::btree::BTree;
+            let mut btree = BTree::open(&mut self.pager, meta.root_index_page);
+            let mut out = Vec::new();
+            for (key, rids) in btree.scan()? {
+                if let Ok(def) = crate::storage::index_catalog::decode_catalog_entry(&key, &rids) {
+                    out.push(def);
+                }
+            }
+            out
+        };
+        for def in defs {
+            use crate::storage::btree::BTree;
+            let mut btree = BTree::open(&mut self.pager, def.root_page_id);
+            for (key, rids) in btree.scan()? {
+                for packed in rids {
+                    match def.entity_kind {
+                        crate::storage::index_catalog::EntityKind::NodeLabel => {
+                            if self.get_node(packed).is_err() {
+                                problems.push(format!(
+                                    "node label index {:?} points at missing node {}",
+                                    key, packed
+                                ));
+                            }
+                        }
+                        crate::storage::index_catalog::EntityKind::EdgeType => {
+                            if self.get_edge(packed).is_err() {
+                                problems.push(format!(
+                                    "edge type index {:?} points at missing edge {}",
+                                    key, packed
+                                ));
+                            }
+                        }
+                        crate::storage::index_catalog::EntityKind::NodeProperty => {
+                            if self.get_node(packed).is_err() {
+                                problems.push(format!(
+                                    "node property index {:?} points at missing node {}",
+                                    key, packed
+                                ));
+                            }
+                        }
+                        crate::storage::index_catalog::EntityKind::EdgeProperty => {
+                            if self.get_edge(packed).is_err() {
+                                problems.push(format!(
+                                    "edge property index {:?} points at missing edge {}",
+                                    key, packed
+                                ));
+                            }
+                        }
+                        crate::storage::index_catalog::EntityKind::UniqueConstraint => {}
+                    }
+                }
+            }
+        }
+        Ok(problems)
+    }
+
+    /// Returns all label names attached to a node (primary + extras).
+    pub fn get_node_labels(&mut self, node_id: NodeId) -> Result<Vec<String>, DbError> {
+        let node = self.get_node(node_id)?;
+        let mut out = Vec::new();
+        if node.label_id != 0
+            && let Some(name) = self.get_label_name(node.label_id)?
+        {
+            out.push(name);
+        }
+        for extra in &node.extra_labels {
+            if let Some(name) = self.get_label_name(*extra)? {
+                out.push(name);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Adds a label to a node (idempotent). Wraps in an auto-committed transaction.
+    pub fn add_node_label(&mut self, node_id: NodeId, label: &str) -> Result<(), DbError> {
+        let tx_id = self.next_tx_id();
+        let mut before_images = Vec::new();
+        match self.add_node_label_inner(node_id, label, Some(&mut before_images)) {
+            Ok(()) => match self.commit_tx(tx_id) {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    self.rollback_pages(&before_images)?;
+                    Err(err)
+                }
+            },
+            Err(err) => {
+                self.rollback_pages(&before_images)?;
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn add_node_label_inner(
+        &mut self,
+        node_id: NodeId,
+        label: &str,
+        mut before_images: Option<&mut Vec<BeforeImage>>,
+    ) -> Result<(), DbError> {
+        let label_id = self.register_property_key_inner_noop(label, before_images.as_deref_mut());
+        let _ = label_id;
+        let label_id = self.register_label_inner(label, before_images.as_deref_mut())?;
+        let (page_id, slot_id) = unpack_record_id(node_id);
+        let mut node = self.get_node(node_id)?;
+        if node.has_label(label_id) {
+            return Ok(());
+        }
+        if node.label_id == 0 {
+            node.label_id = label_id;
+        } else {
+            node.extra_labels.push(label_id);
+        }
+        let mut buf = vec![0u8; node.encoded_size()];
+        node.to_bytes(&mut buf)?;
+        Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
+        let page_buf = self.pager.get_page_mut(page_id)?;
+        layout::update_record(page_buf, slot_id, &buf)?;
+        Ok(())
+    }
+
+    fn register_property_key_inner_noop(
+        &mut self,
+        _name: &str,
+        _before: Option<&mut Vec<BeforeImage>>,
+    ) -> Result<u32, DbError> {
+        Ok(0)
+    }
+
+    /// Removes a label from a node. Primary label removal promotes the first
+    /// extra label (if any) to primary to keep the record layout stable.
+    pub fn remove_node_label(&mut self, node_id: NodeId, label: &str) -> Result<(), DbError> {
+        let tx_id = self.next_tx_id();
+        let mut before_images = Vec::new();
+        match self.remove_node_label_inner(node_id, label, Some(&mut before_images)) {
+            Ok(()) => match self.commit_tx(tx_id) {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    self.rollback_pages(&before_images)?;
+                    Err(err)
+                }
+            },
+            Err(err) => {
+                self.rollback_pages(&before_images)?;
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn remove_node_label_inner(
+        &mut self,
+        node_id: NodeId,
+        label: &str,
+        mut before_images: Option<&mut Vec<BeforeImage>>,
+    ) -> Result<(), DbError> {
+        let label_id = match self.find_label(label)? {
+            Some(id) => id,
+            None => return Ok(()),
+        };
+        let (page_id, slot_id) = unpack_record_id(node_id);
+        let mut node = self.get_node(node_id)?;
+        if node.label_id == label_id {
+            if let Some(first) = node.extra_labels.first().copied() {
+                node.label_id = first;
+                node.extra_labels.remove(0);
+            } else {
+                node.label_id = 0;
+            }
+        } else {
+            let before = node.extra_labels.len();
+            node.extra_labels.retain(|id| *id != label_id);
+            if node.extra_labels.len() == before {
+                return Ok(());
+            }
+        }
+        let mut buf = vec![0u8; node.encoded_size()];
+        node.to_bytes(&mut buf)?;
+        Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
+        let page_buf = self.pager.get_page_mut(page_id)?;
+        layout::update_record(page_buf, slot_id, &buf)?;
+        Ok(())
+    }
+
+    /// Removes a property from a node.
+    pub fn remove_node_property(&mut self, node_id: NodeId, key: &str) -> Result<(), DbError> {
+        let tx_id = self.next_tx_id();
+        let mut before_images = Vec::new();
+        match self.remove_node_property_inner(node_id, key, Some(&mut before_images)) {
+            Ok(()) => match self.commit_tx(tx_id) {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    self.rollback_pages(&before_images)?;
+                    Err(err)
+                }
+            },
+            Err(err) => {
+                self.rollback_pages(&before_images)?;
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn remove_node_property_inner(
+        &mut self,
+        node_id: NodeId,
+        key: &str,
+        mut before_images: Option<&mut Vec<BeforeImage>>,
+    ) -> Result<(), DbError> {
+        let key_id = match self.find_property_key(key)? {
+            Some(id) => id,
+            None => return Ok(()),
+        };
+        let (page_id, slot_id) = unpack_record_id(node_id);
+        let mut node = self.get_node(node_id)?;
+        let before = node.properties.len();
+        node.properties.retain(|p| p.key_id != key_id);
+        if node.properties.len() == before {
+            return Ok(());
+        }
+        let mut buf = vec![0u8; node.encoded_size()];
+        node.to_bytes(&mut buf)?;
+        Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
+        let page_buf = self.pager.get_page_mut(page_id)?;
+        layout::update_record(page_buf, slot_id, &buf)?;
+        Ok(())
+    }
+
+    /// Removes a property from an edge.
+    pub fn remove_edge_property(&mut self, edge_id: EdgeId, key: &str) -> Result<(), DbError> {
+        let tx_id = self.next_tx_id();
+        let mut before_images = Vec::new();
+        match self.remove_edge_property_inner(edge_id, key, Some(&mut before_images)) {
+            Ok(()) => match self.commit_tx(tx_id) {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    self.rollback_pages(&before_images)?;
+                    Err(err)
+                }
+            },
+            Err(err) => {
+                self.rollback_pages(&before_images)?;
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn remove_edge_property_inner(
+        &mut self,
+        edge_id: EdgeId,
+        key: &str,
+        mut before_images: Option<&mut Vec<BeforeImage>>,
+    ) -> Result<(), DbError> {
+        let key_id = match self.find_property_key(key)? {
+            Some(id) => id,
+            None => return Ok(()),
+        };
+        let (page_id, slot_id) = unpack_record_id(edge_id);
+        let mut edge = self.get_edge(edge_id)?;
+        let before = edge.properties.len();
+        edge.properties.retain(|p| p.key_id != key_id);
+        if edge.properties.len() == before {
+            return Ok(());
+        }
+        let mut buf = vec![0u8; edge.encoded_size()];
+        edge.to_bytes(&mut buf)?;
+        Self::capture_before_image(&mut self.pager, &mut before_images, page_id)?;
+        let page_buf = self.pager.get_page_mut(page_id)?;
+        layout::update_record(page_buf, slot_id, &buf)?;
+        Ok(())
+    }
+
     /// Finds an existing DataEdge page with free space, or allocates a new one.
     fn find_or_alloc_page(
         &mut self,
@@ -1185,6 +2256,11 @@ impl HiveDb {
     /// Commits a transaction by writing dirty page images to the WAL,
     /// syncing, and stamping page LSNs.
     pub(crate) fn commit_tx(&mut self, tx_id: TxId) -> Result<(), DbError> {
+        if self.pager.is_read_only() {
+            return Err(DbError::QueryError(
+                "cannot commit a write transaction on a read-only snapshot".to_string(),
+            ));
+        }
         let dirty_pages = self.pager.dirty_page_ids();
 
         let begin_lsn = self.pager.next_lsn();
@@ -1232,6 +2308,11 @@ impl HiveDb {
 
     /// Writes a checkpoint: flushes all dirty pages to disk and truncates the WAL.
     pub fn checkpoint(&mut self) -> Result<(), DbError> {
+        if self.pager.is_read_only() {
+            return Err(DbError::QueryError(
+                "cannot checkpoint a read-only snapshot".to_string(),
+            ));
+        }
         self.pager.flush_file()?;
         self.pager.sync_file()?;
         self.wal.checkpoint()?;

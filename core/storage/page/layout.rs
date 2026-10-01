@@ -311,28 +311,36 @@ pub fn compact_page(buf: &mut [u8; PAGE_SIZE]) -> Result<(), DbError> {
     }
 
     let total_content: usize = records.iter().map(|(d, _)| d.len()).sum();
-    let mut write_offset = PAGE_SIZE - total_content;
+    // Preserve slot indices: packed record IDs are `(page_id, slot_id), so
+    // compaction must never renumber live slots. Dead slots stay dead; live
+    // records are repacked contiguously and each slot's offset is updated.
+    let mut staged = vec![0u8; total_content];
+    let mut staged_offset = 0usize;
+    let mut new_offsets: Vec<(u16, usize, usize)> = Vec::with_capacity(records.len());
+    for (data, old_idx) in &records {
+        staged[staged_offset..staged_offset + data.len()].copy_from_slice(data);
+        new_offsets.push((*old_idx, staged_offset, data.len()));
+        staged_offset += data.len();
+    }
+    let write_base = PAGE_SIZE - total_content;
+    buf[write_base..PAGE_SIZE].copy_from_slice(&staged);
 
-    for (data, _old_idx) in &records {
-        buf[write_offset..write_offset + data.len()].copy_from_slice(data);
-        write_offset += data.len();
+    for (old_idx, staged_off, len) in &new_offsets {
+        let slot_pos = slot_offset(*old_idx, content_start);
+        let slot = SlotEntry::new((write_base + staged_off) as u16, *len as u16);
+        slot.to_bytes(&mut buf[slot_pos..slot_pos + SLOT_ENTRY_SIZE]);
     }
 
     let mut new_header = PageHeader::new(header.page_type);
     new_header.lsn = header.lsn;
-    new_header.slot_count = records.len() as u16;
-    new_header.free_space_offset = (PAGE_SIZE - total_content) as u16;
+    // Slot count is unchanged so packed IDs stay valid; the freeblock chain
+    // is dropped because all free space is contiguous again.
+    new_header.slot_count = header.slot_count;
+    new_header.free_space_offset = write_base as u16;
+    new_header.first_freeblock = 0;
     write_page_header(buf, &new_header);
 
-    let mut slot_offset_val = PAGE_SIZE - total_content;
-    for (idx, (data, _old_idx)) in records.iter().enumerate() {
-        let slot_pos = content_start + idx * SLOT_ENTRY_SIZE;
-        let slot = SlotEntry::new(slot_offset_val as u16, data.len() as u16);
-        slot.to_bytes(&mut buf[slot_pos..slot_pos + SLOT_ENTRY_SIZE]);
-        slot_offset_val += data.len();
-    }
-
-    let zeros_start = content_start + records.len() * SLOT_ENTRY_SIZE;
+    let zeros_start = content_start + (header.slot_count as usize) * SLOT_ENTRY_SIZE;
     let zeros_end = new_header.free_space_offset as usize;
     if zeros_start < zeros_end {
         buf[zeros_start..zeros_end].fill(0);

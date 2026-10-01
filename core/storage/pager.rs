@@ -99,6 +99,10 @@ pub struct Pager {
     freelist_head: PageId,
     /// True if free_pages changed since last persist to disk.
     freelist_dirty: bool,
+    /// Read-only snapshots never write to `hive.db`: dirty evictions are
+    /// dropped instead of flushed, allocation is rejected, and sync/flush
+    /// entry points are no-ops. See `HiveDb::open_snapshot`.
+    read_only: bool,
 }
 
 impl Pager {
@@ -127,6 +131,7 @@ impl Pager {
             free_pages: Vec::new(),
             freelist_head: 0,
             freelist_dirty: false,
+            read_only: false,
         };
 
         let page_count = pager.page_count()?;
@@ -137,6 +142,51 @@ impl Pager {
         }
 
         Ok(pager)
+    }
+
+    /// Opens the pager for `hive.db` in read-only snapshot mode.
+    ///
+    /// Unlike `open`, this never creates or initializes a database: a missing
+    /// or empty file is an error. No write path may reach the file — see the
+    /// guards on `allocate_page`, `flush_page_to_disk`, `write_page_to_disk`,
+    /// and the sync entry points. Used by `HiveDb::open_snapshot` so many
+    /// readers can each hold a private, fully isolated pager.
+    pub fn open_read_only(
+        db_dir: &Path,
+        cache_capacity: usize,
+        pool_capacity: usize,
+    ) -> Result<Self, DbError> {
+        let path = db_dir.join(DB_FILE);
+        if !path.is_file() {
+            return Err(DbError::FileOpenError);
+        }
+        let file = FileHandle::open(&path)?;
+
+        let page_cache = PageCache::new(cache_capacity);
+        let pool = BufferPool::new(pool_capacity);
+
+        let mut pager = Self {
+            file,
+            page_cache,
+            pool,
+            next_lsn: AtomicU64::new(1),
+            free_pages: Vec::new(),
+            freelist_head: 0,
+            freelist_dirty: false,
+            read_only: true,
+        };
+
+        if pager.page_count()? == 0 {
+            return Err(DbError::FileOpenError);
+        }
+        pager.load_freelist()?;
+
+        Ok(pager)
+    }
+
+    /// Returns true when this pager must never write to `hive.db`.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
     }
 
     /// Initializes a brand-new database by writing a valid meta page to page 0.
@@ -262,11 +312,23 @@ impl Pager {
     ///
     /// This is called after writing a PageImage to the WAL so that recovery
     /// can compare the on-disk page LSN against the WAL entry's page_lsn.
+    /// Page 0 uses the meta layout (LSN at a different offset); stamping it
+    /// as a regular page would destroy the magic bytes. The checksum is
+    /// refreshed so `verify_checksum` keeps passing.
     pub fn stamp_page_lsn(&mut self, page_id: PageId, lsn: Lsn) -> Result<(), DbError> {
+        use super::page::format::META_PAGE_ID;
+        if page_id == META_PAGE_ID {
+            let page = self.get_page_mut(page_id)?;
+            let mut meta = layout::read_meta_header(page);
+            meta.lsn = lsn as u32;
+            layout::write_meta_header(page, &meta);
+            return Ok(());
+        }
         let page = self.get_page_mut(page_id)?;
         let mut header = super::page::format::PageHeader::from_bytes(page);
         header.lsn = lsn as u32;
         header.to_bytes(page);
+        layout::update_checksum(page);
         Ok(())
     }
 
@@ -303,7 +365,13 @@ impl Pager {
     }
 
     /// Appends a new zero-filled page to the database file and returns its page id.
+    ///
+    /// Read-only snapshots reject allocation: nothing on the read path may
+    /// grow the shared file, and a loud error beats silent corruption.
     pub fn allocate_page(&mut self) -> Result<PageId, DbError> {
+        if self.read_only {
+            return Err(DbError::WriteError);
+        }
         if let Some(page_id) = self.free_pages.pop() {
             let buf = [0u8; PAGE_SIZE];
             self.file.write_page(page_id, &buf)?;
@@ -325,6 +393,11 @@ impl Pager {
     /// Makes a newly allocated page available for reuse in this pager session.
     /// Persists the freed page ID to the persistent freelist.
     pub fn free_page(&mut self, page_id: PageId) -> Result<(), DbError> {
+        if self.read_only {
+            // Unreachable on the read path (allocation is rejected); no-op so
+            // rollback of an empty transaction stays infallible.
+            return Ok(());
+        }
         if page_id == META_PAGE_ID || self.free_pages.contains(&page_id) {
             return Ok(());
         }
@@ -341,7 +414,14 @@ impl Pager {
     }
 
     /// Writes one dirty cached page back to the main database file and marks it clean.
+    ///
+    /// Read-only snapshots drop the dirty bytes instead: their cache is
+    /// private, so discarding can never affect another handle.
     pub fn flush_page_to_disk(&mut self, page_id: PageId) -> Result<(), DbError> {
+        if self.read_only {
+            self.page_cache.mark_clean(page_id)?;
+            return Ok(());
+        }
         let data = *self
             .page_cache
             .get(page_id)
@@ -438,6 +518,9 @@ impl Pager {
 
     /// Flushes all dirty cached pages to the database file, then flushes the file writer.
     pub fn flush_file(&mut self) -> Result<(), DbError> {
+        if self.read_only {
+            return Ok(());
+        }
         let dirty_pages: Vec<PageId> = self.page_cache.dirty_page_ids().into_iter().collect();
         for page_id in dirty_pages {
             if self.page_cache.get(page_id).is_some() {
@@ -449,6 +532,9 @@ impl Pager {
 
     /// Flushes dirty pages and asks the OS to sync the database file to storage.
     pub fn sync_file(&mut self) -> Result<(), DbError> {
+        if self.read_only {
+            return Ok(());
+        }
         self.flush_file()?;
         self.file.sync()
     }
@@ -471,11 +557,18 @@ impl Pager {
     }
 
     /// Writes the provided page image directly to disk without updating the page cache.
+    ///
+    /// Read-only snapshots redirect into the private cache instead. This is
+    /// what lets WAL recovery redo run unmodified on a snapshot handle: the
+    /// redo images land in cache only and never reach the shared file.
     pub fn write_page_to_disk(
         &mut self,
         page_id: PageId,
         data: &[u8; PAGE_SIZE],
     ) -> Result<(), DbError> {
+        if self.read_only {
+            return self.restore_page(page_id, data);
+        }
         self.file.write_page(page_id, data)
     }
 

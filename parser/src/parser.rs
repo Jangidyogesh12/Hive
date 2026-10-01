@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    BinaryOp, Clause, DeleteClause, Direction, Expression, MatchClause, NodePattern, OrderItem,
-    PathPattern, PathSegment, Pattern, RelationshipLength, RelationshipPattern, ReturnClause,
-    ReturnItem, SetClause, Statement, UnaryOp,
+    BinaryOp, Clause, CountTarget, DeleteClause, Direction, Expression, MatchClause, NodePattern,
+    OrderItem, PathPattern, PathSegment, Pattern, RelationshipLength, RelationshipPattern,
+    RemoveClause, RemoveItem, ReturnClause, ReturnItem, SetClause, Statement, UnaryOp,
 };
 use crate::error::ParseError;
 use crate::lexer::Lexer;
@@ -61,12 +61,56 @@ impl<'a> Parser<'a> {
     }
 
     /// Consumes an identifier token and returns its string value.
+    ///
+    /// Keywords that can safely serve as property keys, labels, or parameter
+    /// names (e.g. `count` in `SET n.count = 2`) are also accepted here and
+    /// returned in their canonical lowercase form.
     fn expect_ident(&mut self) -> Result<String, ParseError> {
         match &self.current.kind {
             TokenType::Identifier(s) => {
                 let s = s.clone();
                 self.advance();
                 Ok(s)
+            }
+            TokenType::Count => {
+                self.advance();
+                Ok("count".to_string())
+            }
+            TokenType::With => {
+                self.advance();
+                Ok("with".to_string())
+            }
+            TokenType::Optional => {
+                self.advance();
+                Ok("optional".to_string())
+            }
+            TokenType::Remove => {
+                self.advance();
+                Ok("remove".to_string())
+            }
+            TokenType::Null => {
+                self.advance();
+                Ok("null".to_string())
+            }
+            TokenType::On => {
+                self.advance();
+                Ok("on".to_string())
+            }
+            TokenType::Sum => {
+                self.advance();
+                Ok("sum".to_string())
+            }
+            TokenType::Avg => {
+                self.advance();
+                Ok("avg".to_string())
+            }
+            TokenType::Min => {
+                self.advance();
+                Ok("min".to_string())
+            }
+            TokenType::Max => {
+                self.advance();
+                Ok("max".to_string())
             }
             _ => Err(ParseError::UnexpectedToken {
                 expected: "identifier".to_string(),
@@ -89,13 +133,19 @@ impl<'a> Parser<'a> {
             let clause = match self.peek() {
                 TokenType::Create => self.parse_create(),
                 TokenType::Match => self.parse_match(),
+                TokenType::Optional => self.parse_optional_match(),
+                TokenType::With => self.parse_with().map(Clause::With),
                 TokenType::Where => self.parse_where(),
                 TokenType::Delete | TokenType::Detach => self.parse_delete(),
+                TokenType::Remove => self.parse_remove(),
                 TokenType::Merge => self.parse_merge(),
                 TokenType::Set => self.parse_set(),
+                TokenType::On => self.parse_on_action(),
                 TokenType::Return => self.parse_return().map(Clause::Return),
                 _ => Err(ParseError::UnexpectedToken {
-                    expected: "CREATE, MATCH, WHERE, DELETE, MERGE, SET, or RETURN".to_string(),
+                    expected:
+                        "CREATE, MATCH, OPTIONAL MATCH, WITH, WHERE, DELETE, REMOVE, MERGE, SET, ON CREATE SET, ON MATCH SET, or RETURN"
+                            .to_string(),
                     got: self.current.kind.to_string(),
                     span: self.current.span.to_miette(),
                 }),
@@ -170,20 +220,107 @@ impl<'a> Parser<'a> {
         Ok(Clause::Merge(pattern))
     }
 
+    /// Parses `OPTIONAL MATCH <pattern>`.
+    fn parse_optional_match(&mut self) -> Result<Clause, ParseError> {
+        self.advance(); // consume OPTIONAL
+        self.expect(TokenType::Match)?;
+        let pattern = self.parse_pattern()?;
+        Ok(Clause::OptionalMatch(MatchClause { pattern }))
+    }
+
+    /// Parses `WITH ...` with the same projection syntax as `RETURN`.
+    fn parse_with(&mut self) -> Result<ReturnClause, ParseError> {
+        self.expect(TokenType::With)?;
+        self.parse_return_items()
+    }
+
+    /// Parses `REMOVE n:Label, m.prop, ...`.
+    fn parse_remove(&mut self) -> Result<Clause, ParseError> {
+        self.advance(); // consume REMOVE
+        let mut items = vec![self.parse_remove_item()?];
+        while self.at(&TokenType::Comma) {
+            self.advance();
+            items.push(self.parse_remove_item()?);
+        }
+        Ok(Clause::Remove(RemoveClause { items }))
+    }
+
+    fn parse_remove_item(&mut self) -> Result<RemoveItem, ParseError> {
+        let variable = self.expect_ident()?;
+        if self.at(&TokenType::Colon) {
+            self.advance();
+            let label = self.expect_ident()?;
+            return Ok(RemoveItem {
+                variable,
+                label: Some(label),
+                property: None,
+            });
+        }
+        if self.at(&TokenType::Dot) {
+            self.advance();
+            let property = self.expect_ident()?;
+            return Ok(RemoveItem {
+                variable,
+                label: None,
+                property: Some(property),
+            });
+        }
+        Err(ParseError::UnexpectedToken {
+            expected: ":Label or .property after REMOVE variable".to_string(),
+            got: self.current.kind.to_string(),
+            span: self.current.span.to_miette(),
+        })
+    }
+
+    /// Parses `ON CREATE SET ...` and `ON MATCH SET ...` after MERGE.
+    fn parse_on_action(&mut self) -> Result<Clause, ParseError> {
+        self.expect(TokenType::On)?;
+        match self.peek().clone() {
+            TokenType::Create => {
+                self.advance();
+                self.expect(TokenType::Set)?;
+                Ok(Clause::OnCreate(self.parse_set_clause_body()?))
+            }
+            TokenType::Match => {
+                self.advance();
+                self.expect(TokenType::Set)?;
+                Ok(Clause::OnMatch(self.parse_set_clause_body()?))
+            }
+            TokenType::Identifier(s) if s.eq_ignore_ascii_case("CREATE") => {
+                self.advance();
+                self.expect(TokenType::Set)?;
+                Ok(Clause::OnCreate(self.parse_set_clause_body()?))
+            }
+            TokenType::Identifier(s) if s.eq_ignore_ascii_case("MATCH") => {
+                self.advance();
+                self.expect(TokenType::Set)?;
+                Ok(Clause::OnMatch(self.parse_set_clause_body()?))
+            }
+            _ => Err(ParseError::UnexpectedToken {
+                expected: "CREATE or MATCH after ON".to_string(),
+                got: self.current.kind.to_string(),
+                span: self.current.span.to_miette(),
+            }),
+        }
+    }
+
     /// Parses `SET variable.property = expression`.
     fn parse_set(&mut self) -> Result<Clause, ParseError> {
         self.advance(); // consume SET
+        Ok(Clause::Set(self.parse_set_clause_body()?))
+    }
+
+    fn parse_set_clause_body(&mut self) -> Result<SetClause, ParseError> {
         let variable = self.expect_ident()?;
         self.expect(TokenType::Dot)?;
         let property = self.expect_ident()?;
         self.expect(TokenType::Eq)?;
         let value = self.parse_expression()?;
-
-        Ok(Clause::Set(SetClause {
+        Ok(SetClause {
             variable,
             property,
             value,
-        }))
+        })
     }
 
     /// Parses a node-only pattern or a path pattern.
@@ -212,7 +349,7 @@ impl<'a> Parser<'a> {
         )
     }
 
-    /// Parses `(variable:Label {properties})` node syntax.
+    /// Parses `(variable:Label:Other {properties})` node syntax.
     fn parse_node_pattern(&mut self) -> Result<NodePattern, ParseError> {
         self.expect(TokenType::LParen)?;
 
@@ -222,12 +359,14 @@ impl<'a> Parser<'a> {
             None
         };
 
-        let label = if self.at(&TokenType::Colon) {
+        let mut labels = Vec::new();
+        while self.at(&TokenType::Colon) {
             self.advance(); // consume ':'
-            Some(self.expect_ident()?)
-        } else {
-            None
-        };
+            labels.push(self.expect_ident()?);
+        }
+        let mut labels_iter = labels.into_iter();
+        let label = labels_iter.next();
+        let extra_labels: Vec<String> = labels_iter.collect();
 
         let properties = if self.at(&TokenType::LBrace) {
             self.parse_property_map()?
@@ -240,6 +379,7 @@ impl<'a> Parser<'a> {
         Ok(NodePattern {
             variable,
             label,
+            extra_labels,
             properties,
         })
     }
@@ -383,7 +523,10 @@ impl<'a> Parser<'a> {
     /// Parses `RETURN` projections plus optional `ORDER BY`, `SKIP`, and `LIMIT`.
     fn parse_return(&mut self) -> Result<ReturnClause, ParseError> {
         self.expect(TokenType::Return)?;
+        self.parse_return_items()
+    }
 
+    fn parse_return_items(&mut self) -> Result<ReturnClause, ParseError> {
         let mut items = Vec::new();
         loop {
             let expression = self.parse_expression()?;
@@ -550,7 +693,32 @@ impl<'a> Parser<'a> {
 
     /// Parses a literal, variable, property access, or parenthesized expression.
     fn parse_atom(&mut self) -> Result<Expression, ParseError> {
+        // Unary minus for negative numbers: `-5`, `-3.14`.
+        if self.at(&TokenType::Dash) {
+            self.advance();
+            match self.peek().clone() {
+                TokenType::Integer(n) => {
+                    self.advance();
+                    return Ok(Expression::Integer(-n));
+                }
+                TokenType::Float(n) => {
+                    self.advance();
+                    return Ok(Expression::Float(-n));
+                }
+                _ => {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "number after `-`".to_string(),
+                        got: self.current.kind.to_string(),
+                        span: self.current.span.to_miette(),
+                    });
+                }
+            }
+        }
         match self.peek().clone() {
+            TokenType::Null => {
+                self.advance();
+                Ok(Expression::Null)
+            }
             TokenType::True => {
                 self.advance();
                 Ok(Expression::Boolean(true))
@@ -558,6 +726,40 @@ impl<'a> Parser<'a> {
             TokenType::False => {
                 self.advance();
                 Ok(Expression::Boolean(false))
+            }
+            TokenType::Count => {
+                self.advance();
+                self.expect(TokenType::LParen)?;
+                if self.at(&TokenType::Star) {
+                    self.advance();
+                    self.expect(TokenType::RParen)?;
+                    Ok(Expression::Count(Box::new(CountTarget::Star)))
+                } else {
+                    let inner = self.parse_expression()?;
+                    self.expect(TokenType::RParen)?;
+                    Ok(Expression::Count(Box::new(CountTarget::Expr(Box::new(
+                        inner,
+                    )))))
+                }
+            }
+            TokenType::Sum | TokenType::Avg | TokenType::Min | TokenType::Max => {
+                let func = self.current.kind.to_string();
+                self.advance();
+                self.expect(TokenType::LParen)?;
+                let inner = self.parse_expression()?;
+                self.expect(TokenType::RParen)?;
+                let inner = Box::new(inner);
+                match func.as_str() {
+                    "SUM" => Ok(Expression::Sum(inner)),
+                    "AVG" => Ok(Expression::Avg(inner)),
+                    "MIN" => Ok(Expression::Min(inner)),
+                    _ => Ok(Expression::Max(inner)),
+                }
+            }
+            TokenType::Dollar => {
+                self.advance();
+                let name = self.expect_ident()?;
+                Ok(Expression::Param(name))
             }
             TokenType::Integer(n) => {
                 self.advance();
@@ -573,6 +775,22 @@ impl<'a> Parser<'a> {
             }
             TokenType::Identifier(_) => {
                 let name = self.expect_ident()?;
+                if name.eq_ignore_ascii_case("NULL") {
+                    return Ok(Expression::Null);
+                }
+                if name.eq_ignore_ascii_case("COUNT") && self.at(&TokenType::LParen) {
+                    self.advance(); // consume '('
+                    if self.at(&TokenType::Star) {
+                        self.advance();
+                        self.expect(TokenType::RParen)?;
+                        return Ok(Expression::Count(Box::new(CountTarget::Star)));
+                    }
+                    let inner = self.parse_expression()?;
+                    self.expect(TokenType::RParen)?;
+                    return Ok(Expression::Count(Box::new(CountTarget::Expr(Box::new(
+                        inner,
+                    )))));
+                }
                 if self.at(&TokenType::Dot) {
                     self.advance(); // consume '.'
                     let property = self.expect_ident()?;

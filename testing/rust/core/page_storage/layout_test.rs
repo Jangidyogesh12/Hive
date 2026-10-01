@@ -163,8 +163,13 @@ fn compact_reclaims_space_after_deletions() {
         "compact should reclaim free space"
     );
 
+    // Slot indices are stable across compaction so packed record IDs stay
+    // valid: dead slots remain dead and live slots keep their indices.
     let header = layout::read_page_header(&buf);
-    assert_eq!(header.slot_count, 3);
+    assert_eq!(header.slot_count, 5);
+    assert_eq!(layout::read_record(&buf, 0).unwrap(), b"keep1");
+    assert!(layout::read_record(&buf, 1).is_none());
+    assert_eq!(layout::read_record(&buf, 2).unwrap(), b"keep2");
 }
 
 #[test]
@@ -180,9 +185,11 @@ fn compact_preserves_live_records_in_order() {
 
     layout::compact_page(&mut buf).unwrap();
 
-    assert_eq!(layout::read_record(&buf, 0).unwrap(), b"BBB");
-    assert_eq!(layout::read_record(&buf, 1).unwrap(), b"DDD");
+    // Slot-stable compaction: live records keep their original slot indices.
+    assert!(layout::read_record(&buf, 0).is_none());
+    assert_eq!(layout::read_record(&buf, 1).unwrap(), b"BBB");
     assert!(layout::read_record(&buf, 2).is_none());
+    assert_eq!(layout::read_record(&buf, 3).unwrap(), b"DDD");
 }
 
 #[test]

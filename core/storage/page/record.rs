@@ -13,7 +13,7 @@ use crate::value;
 pub struct NodeRecord {
     /// Logical node ID (monotonically increasing, assigned at creation).
     pub id: u64,
-    /// ID of the label associated with this node (0 = unlabeled).
+    /// ID of the primary label associated with this node (0 = unlabeled).
     pub label_id: u32,
     /// Reserved flags for future use.
     pub flags: u32,
@@ -25,6 +25,25 @@ pub struct NodeRecord {
     pub first_property: u64,
     /// Inline property entries stored directly in the node record.
     pub properties: Vec<PropertyEntry>,
+    /// Additional label IDs beyond the primary `label_id` (multi-label support).
+    pub extra_labels: Vec<u32>,
+}
+
+impl NodeRecord {
+    /// All label IDs on this node, primary first (skips 0 = unlabeled primary).
+    pub fn all_label_ids(&self) -> Vec<u32> {
+        let mut out = Vec::new();
+        if self.label_id != 0 {
+            out.push(self.label_id);
+        }
+        out.extend(self.extra_labels.iter().copied());
+        out
+    }
+
+    /// Returns true if this node carries the given label ID in any position.
+    pub fn has_label(&self, label_id: u32) -> bool {
+        self.label_id == label_id || self.extra_labels.contains(&label_id)
+    }
 }
 
 /// On-disk representation of a single directed edge stored in a slotted page.
@@ -113,6 +132,7 @@ impl NodeRecord {
             first_in_edge: NIL_ID,
             first_property: NIL_ID,
             properties: Vec::new(),
+            extra_labels: Vec::new(),
         }
     }
 
@@ -123,7 +143,8 @@ impl NodeRecord {
             .iter()
             .map(|p| PROPERTY_ENTRY_BASE_SIZE + self.property_value_size(p))
             .sum();
-        NODE_FIXED_PREFIX + props_size
+        // +2 for extra-label count, +4 per extra label.
+        NODE_FIXED_PREFIX + props_size + 2 + self.extra_labels.len() * 4
     }
 
     /// Returns extra bytes needed by a property entry's non-inline value.
@@ -171,6 +192,14 @@ impl NodeRecord {
             if entry.value_type == value::LONG_STRING {
                 pos += serializer::var_int_write(&mut buf[pos..], entry.long_value_offset);
             }
+        }
+
+        let extra_count = self.extra_labels.len() as u16;
+        serializer::put_u16_le(buf, pos, extra_count);
+        pos += 2;
+        for label_id in &self.extra_labels {
+            serializer::put_u32_le(buf, pos, *label_id);
+            pos += 4;
         }
 
         Ok(size)
@@ -227,6 +256,23 @@ impl NodeRecord {
             });
         }
 
+        // Trailing extra-label section: [extra_count: u16][label_id: u32 * count].
+        // Older files without this section are treated as having no extra labels.
+        let mut extra_labels = Vec::new();
+        if pos + 2 <= buf.len() {
+            let extra_count = serializer::get_u16_le(buf, pos) as usize;
+            pos += 2;
+            if extra_count > 0 {
+                if pos + extra_count * 4 > buf.len() {
+                    return Err(DbError::ReadError);
+                }
+                for _ in 0..extra_count {
+                    extra_labels.push(serializer::get_u32_le(buf, pos));
+                    pos += 4;
+                }
+            }
+        }
+
         Ok(Self {
             id,
             label_id,
@@ -235,6 +281,7 @@ impl NodeRecord {
             first_in_edge,
             first_property,
             properties,
+            extra_labels,
         })
     }
 }

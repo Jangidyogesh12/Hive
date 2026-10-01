@@ -147,9 +147,19 @@ impl<'a> Transaction<'a> {
                 indexed_props.push((key_id, value.clone()));
             }
         }
+        let mut all_labels = vec![node.label_id];
+        all_labels.extend(node.extra_labels.iter().copied());
         self.db
             .delete_node_inner(node_id, Some(&mut self.before_images))?;
-        self.maintain_indexes_on_node_delete(node_id, node.label_id, &indexed_props)?;
+        for label_id in all_labels {
+            self.maintain_indexes_on_node_delete(node_id, label_id, &indexed_props)?;
+        }
+        // Property entries under label 0 (global delete path) are handled inside
+        // maintain_indexes_on_node_delete for each label; ensure global cleanup
+        // even for unlabeled nodes.
+        if node.label_id == 0 && node.extra_labels.is_empty() {
+            self.maintain_indexes_on_node_delete(node_id, 0, &indexed_props)?;
+        }
         Ok(())
     }
 
@@ -314,6 +324,98 @@ impl<'a> Transaction<'a> {
         edge_id: EdgeId,
     ) -> Result<Vec<(String, Value)>, DbError> {
         self.db.list_edge_properties(edge_id)
+    }
+
+    /// Returns all label names attached to a node.
+    pub fn get_node_labels(&mut self, node_id: NodeId) -> Result<Vec<String>, DbError> {
+        self.db.get_node_labels(node_id)
+    }
+
+    /// Adds a label to a node with index maintenance.
+    pub fn add_node_label(&mut self, node_id: NodeId, label: &str) -> Result<(), DbError> {
+        let label_id = self.register_label(label)?;
+        let node = self.get_node(node_id)?;
+        if node.has_label(label_id) {
+            return Ok(());
+        }
+        self.db
+            .add_node_label_inner(node_id, label, Some(&mut self.before_images))?;
+        // Maintain label index for the newly added label.
+        self.maintain_indexes_on_label_add(node_id, label_id)?;
+        // Re-index existing properties under the new label for per-label property indexes.
+        let props = self.list_node_properties(node_id)?;
+        for (name, value) in &props {
+            if let Some(key_id) = self.find_property_key(name)?
+                && crate::transaction::value_to_btree_key(value).is_ok()
+            {
+                self.maintain_indexes_on_node_property_add_for_label(
+                    node_id, label_id, key_id, value,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Removes a label from a node with index maintenance.
+    pub fn remove_node_label(&mut self, node_id: NodeId, label: &str) -> Result<(), DbError> {
+        let Some(label_id) = self.find_label(label)? else {
+            return Ok(());
+        };
+        let node = self.get_node(node_id)?;
+        if !node.has_label(label_id) {
+            return Ok(());
+        }
+        // Capture indexed properties before removal for cleanup.
+        let props = self.list_node_properties(node_id)?;
+        let mut indexed: Vec<(u32, Value)> = Vec::new();
+        for (name, value) in &props {
+            if let Some(key_id) = self.find_property_key(name)?
+                && crate::transaction::value_to_btree_key(value).is_ok()
+            {
+                indexed.push((key_id, value.clone()));
+            }
+        }
+        self.db
+            .remove_node_label_inner(node_id, label, Some(&mut self.before_images))?;
+        self.maintain_indexes_on_label_remove(node_id, label_id, &indexed)?;
+        Ok(())
+    }
+
+    /// Removes a node property with index maintenance.
+    pub fn remove_node_property(&mut self, node_id: NodeId, key: &str) -> Result<(), DbError> {
+        let node = self.get_node(node_id)?;
+        let old = self.get_node_property(node_id, key).ok();
+        let key_id = self.find_property_key(key)?.unwrap_or(0);
+        self.db
+            .remove_node_property_inner(node_id, key, Some(&mut self.before_images))?;
+        if let Some(old_value) = old.as_ref() {
+            self.maintain_indexes_on_node_property_remove(
+                node_id,
+                node.label_id,
+                &node.extra_labels,
+                key_id,
+                old_value,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Removes an edge property with index maintenance.
+    pub fn remove_edge_property(&mut self, edge_id: EdgeId, key: &str) -> Result<(), DbError> {
+        let edge = self.get_edge(edge_id)?;
+        let old = self.get_edge_property(edge_id, key).ok();
+        let key_id = self.find_property_key(key)?.unwrap_or(0);
+        self.db
+            .remove_edge_property_inner(edge_id, key, Some(&mut self.before_images))?;
+        if let Some(old_value) = old.as_ref() {
+            self.maintain_indexes_on_edge_property_remove(
+                edge_id,
+                edge.label_id,
+                key_id,
+                old_value,
+            )?;
+        }
+        Ok(())
     }
 
     /// Commits a read-only transaction without WAL work.
@@ -830,6 +932,126 @@ impl<'a> Transaction<'a> {
                 &BtreeKey::Int(label_id as i64),
                 edge_id,
             )?;
+        }
+        Ok(())
+    }
+
+    /// Maintains label indexes when a label is added to an existing node.
+    pub(crate) fn maintain_indexes_on_label_add(
+        &mut self,
+        node_id: NodeId,
+        label_id: u32,
+    ) -> Result<(), DbError> {
+        if label_id == 0 {
+            return Ok(());
+        }
+        self.insert_into_index(
+            EntityKind::NodeLabel,
+            label_id,
+            0,
+            &BtreeKey::Int(label_id as i64),
+            node_id,
+        )?;
+        self.insert_into_index(
+            EntityKind::NodeLabel,
+            0,
+            0,
+            &BtreeKey::Int(label_id as i64),
+            node_id,
+        )?;
+        Ok(())
+    }
+
+    /// Inserts a property value into per-label and global indexes for a label.
+    pub(crate) fn maintain_indexes_on_node_property_add_for_label(
+        &mut self,
+        node_id: NodeId,
+        label_id: u32,
+        key_id: u32,
+        value: &Value,
+    ) -> Result<(), DbError> {
+        let Ok(bkey) = value_to_btree_key(value) else {
+            return Ok(());
+        };
+        self.insert_into_index(EntityKind::NodeProperty, label_id, key_id, &bkey, node_id)?;
+        if label_id != 0 {
+            self.insert_into_index(EntityKind::NodeProperty, 0, key_id, &bkey, node_id)?;
+        }
+        Ok(())
+    }
+
+    /// Removes label index entries and per-label property entries for a label.
+    pub(crate) fn maintain_indexes_on_label_remove(
+        &mut self,
+        node_id: NodeId,
+        label_id: u32,
+        indexed_props: &[(u32, Value)],
+    ) -> Result<(), DbError> {
+        if label_id != 0 {
+            self.delete_from_index(
+                EntityKind::NodeLabel,
+                label_id,
+                0,
+                &BtreeKey::Int(label_id as i64),
+                node_id,
+            )?;
+            self.delete_from_index(
+                EntityKind::NodeLabel,
+                0,
+                0,
+                &BtreeKey::Int(label_id as i64),
+                node_id,
+            )?;
+        }
+        for (key_id, value) in indexed_props {
+            let Ok(bkey) = value_to_btree_key(value) else {
+                continue;
+            };
+            self.delete_from_index(EntityKind::NodeProperty, label_id, *key_id, &bkey, node_id)?;
+        }
+        Ok(())
+    }
+
+    /// Removes property index entries across all label positions of a node.
+    pub(crate) fn maintain_indexes_on_node_property_remove(
+        &mut self,
+        node_id: NodeId,
+        primary_label: u32,
+        extra_labels: &[u32],
+        key_id: u32,
+        old_value: &Value,
+    ) -> Result<(), DbError> {
+        let Ok(bkey) = value_to_btree_key(old_value) else {
+            return Ok(());
+        };
+        self.delete_from_index(
+            EntityKind::NodeProperty,
+            primary_label,
+            key_id,
+            &bkey,
+            node_id,
+        )?;
+        for extra in extra_labels {
+            self.delete_from_index(EntityKind::NodeProperty, *extra, key_id, &bkey, node_id)?;
+        }
+        self.delete_from_index(EntityKind::NodeProperty, 0, key_id, &bkey, node_id)?;
+        Ok(())
+    }
+
+    /// Removes edge property index entries.
+    pub(crate) fn maintain_indexes_on_edge_property_remove(
+        &mut self,
+        edge_id: EdgeId,
+        label_id: u32,
+        key_id: u32,
+        old_value: &Value,
+    ) -> Result<(), DbError> {
+        let Ok(bkey) = value_to_btree_key(old_value) else {
+            return Ok(());
+        };
+        self.delete_from_index(EntityKind::EdgeProperty, label_id, key_id, &bkey, edge_id)?;
+        if label_id != 0 {
+            self.delete_from_index(EntityKind::EdgeProperty, 0, key_id, &bkey, edge_id)?;
         }
         Ok(())
     }

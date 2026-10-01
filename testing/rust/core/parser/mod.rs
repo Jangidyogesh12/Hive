@@ -1,5 +1,6 @@
 //! Parser production tests organized by clause type.
 
+mod advanced_clauses;
 mod create;
 mod delete_tests;
 mod error_tests;
